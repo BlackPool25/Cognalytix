@@ -1,0 +1,40 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: cognalytix
+      POSTGRES_USER: shreyasjoshi
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5332:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+  backend:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      # Inside the Compose network Postgres listens on 5432; 5332 is only for host → container mapping
+      DB_URL: jdbc:postgresql://postgres:5432/cognalytix
+      DB_USER: shreyasjoshi
+      DB_PASS: password
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL: qwen3:14b
+      JWT_SECRET: c3VycHJpc2VsZWF2aW5nZHV0eWJvYXR0cnlyZXBlYXRsb2d0aGlyZGRlY2lkZXJlY2U=
+    depends_on:
+      - postgres
+      - ollama
+
+volumes:
+  pgdata:
+  ollama_data:
