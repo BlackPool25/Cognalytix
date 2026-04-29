@@ -30,8 +30,8 @@ public class RefreshToken {
     @OnDelete(action = OnDeleteAction.CASCADE)
     private User user;
 
-    @Column(nullable = false, unique = true, columnDefinition = "TEXT")
-    private String token;
+    @Column(name = "token_hash", nullable = false, unique = true, length = 64)
+    private String tokenHash;
 
     @Column(name = "expires_at", nullable = false)
     private Instant expiresAt;
@@ -59,12 +59,12 @@ public class RefreshToken {
         this.user = user;
     }
 
-    public String getToken() {
-        return token;
+    public String getTokenHash() {
+        return tokenHash;
     }
 
-    public void setToken(String token) {
-        this.token = token;
+    public void setTokenHash(String tokenHash) {
+        this.tokenHash = tokenHash;
     }
 
     public Instant getExpiresAt() {

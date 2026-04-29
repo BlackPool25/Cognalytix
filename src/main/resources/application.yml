@@ -50,9 +50,13 @@ app:
     secret: ${JWT_SECRET:c3VycHJpc2VsZWF2aW5nZHV0eWJvYXR0cnlyZXBlYXRsb2d0aGlyZGRlY2lkZXJlY2U=}
     access-token-expiry-ms: 900000
     refresh-token-expiry-days: 7
+    # HMAC key material for hashing refresh tokens before persistence (never store plain refresh tokens). Override REFRESH_STORAGE_SECRET in production.
+    refresh-storage-secret: ${REFRESH_STORAGE_SECRET:local-dev-only-change-me-use-long-random-and-env-in-prod-006c8e8c}
   security:
     # Server-side pepper appended to passwords before BCrypt (strength 10). Override in production via env.
     password-pepper: ${PASSWORD_PEPPER:901d57e5b57af0d8ad329fbb88d8146f082ed3f752fa018ae4342e8d003ccfe1}
+    # Optional. Comma-separated emails that may call admin APIs when users.role = ADMIN. If empty, any ADMIN may.
+    admin-allowed-emails: ${ADMIN_ALLOWED_EMAILS:}
 
   async:
     core-pool-size: 4

@@ -1,4 +1,7 @@
 spring:
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.security.autoconfigure.UserDetailsServiceAutoConfiguration
   datasource:
     url: jdbc:h2:mem:cognalytix;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH
     driver-class-name: org.h2.Driver
@@ -16,5 +19,9 @@ spring:
 app:
   jwt:
     secret: dGVzdC1zZWNyZXQta2V5LTEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMw==
+    access-token-expiry-ms: 900000
+    refresh-token-expiry-days: 7
+    refresh-storage-secret: test-only-refresh-storage-secret-change-me-32chars-min
   security:
     password-pepper: "0000000000000000000000000000000000000000000000000000000000000000"
+    admin-allowed-emails: ""

@@ -17,6 +17,7 @@ import org.springframework.web.context.request.ServletWebRequest;
 import org.springframework.web.context.request.WebRequest;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
+import org.springframework.security.access.AccessDeniedException;
 
 import java.util.List;
 
@@ -27,6 +28,20 @@ import java.util.List;
 @Order(Ordered.HIGHEST_PRECEDENCE)
 @RestControllerAdvice
 public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
+
+    @org.springframework.web.bind.annotation.ExceptionHandler(AccessDeniedException.class)
+    public ResponseEntity<ApiErrorResponse> handleAccessDenied(AccessDeniedException ex, WebRequest request) {
+        ApiErrorResponse body = new ApiErrorResponse(
+                HttpStatus.FORBIDDEN.value(),
+                "forbidden",
+                "You do not have permission for this operation.",
+                List.of(),
+                AuthPostBodyHints.forRequestPath(requestUri(request))
+        );
+        return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(body);
+    }
 
     @Override
     protected ResponseEntity<Object> handleHttpMessageNotReadable(

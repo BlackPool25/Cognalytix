@@ -23,10 +23,13 @@ public final class AuthPostBodyHints {
             return login();
         }
         if (path.endsWith("/logout")) {
-            return refreshStyle("/api/auth/logout", "Same body as /api/auth/refresh; revokes the refresh token.");
+            return logoutHint();
         }
         if (path.endsWith("/refresh")) {
-            return refreshStyle("/api/auth/refresh", "Exchange a valid refresh token for a new access token.");
+            return refreshStyle(
+                    "/api/auth/refresh",
+                    "Exchange a valid refresh token for a new access token and a new refresh token (rotation)."
+            );
         }
         return null;
     }
@@ -67,6 +70,18 @@ public final class AuthPostBodyHints {
                 JSON,
                 body,
                 constraints
+        );
+    }
+
+    private static ApiErrorResponse.ExpectedPostRequest logoutHint() {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("refreshToken", "<opaque refresh token to revoke>");
+        return new ApiErrorResponse.ExpectedPostRequest(
+                "POST",
+                "/api/auth/logout",
+                JSON,
+                body,
+                "Requires Authorization: Bearer <accessToken> and the same refreshToken body as /api/auth/refresh. Revokes that refresh token (rotation-safe)."
         );
     }
 }

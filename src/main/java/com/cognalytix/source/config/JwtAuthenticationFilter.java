@@ -2,8 +2,10 @@ package com.cognalytix.source.config;
 
 import com.cognalytix.source.domain.user.User;
 import com.cognalytix.source.domain.user.UserRepository;
+import com.cognalytix.source.security.ApiErrorResponseWriter;
 import com.cognalytix.source.security.AuthUserPrincipal;
 import com.cognalytix.source.service.JwtService;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.JwtException;
 import jakarta.servlet.FilterChain;
@@ -26,11 +28,16 @@ import java.util.UUID;
 @Component
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
-    /** Use Spring Security matchers so paths agree with SecurityFilterChain (context path, etc.). */
+    /**
+     * Paths that skip JWT parsing but may still hit the rest of the chain (must match
+     * {@link SecurityConfig} permit-all list for auth endpoints).
+     */
     private static final List<RequestMatcher> PUBLIC_URLS = List.of(
             PathPatternRequestMatcher.pathPattern("/"),
             PathPatternRequestMatcher.pathPattern("/favicon.ico"),
-            PathPatternRequestMatcher.pathPattern("/api/auth/**"),
+            PathPatternRequestMatcher.pathPattern("/api/auth/register"),
+            PathPatternRequestMatcher.pathPattern("/api/auth/login"),
+            PathPatternRequestMatcher.pathPattern("/api/auth/refresh"),
             PathPatternRequestMatcher.pathPattern("/login"),
             PathPatternRequestMatcher.pathPattern("/error"),
             PathPatternRequestMatcher.pathPattern("/actuator/health"),
@@ -39,10 +46,12 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     private final JwtService jwtService;
     private final UserRepository userRepository;
+    private final ObjectMapper objectMapper;
 
-    public JwtAuthenticationFilter(JwtService jwtService, UserRepository userRepository) {
+    public JwtAuthenticationFilter(JwtService jwtService, UserRepository userRepository, ObjectMapper objectMapper) {
         this.jwtService = jwtService;
         this.userRepository = userRepository;
+        this.objectMapper = objectMapper;
     }
 
     @Override
@@ -67,8 +76,19 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             Claims claims = jwtService.parseAccessToken(token);
             UUID userId = UUID.fromString(claims.getSubject());
             User user = userRepository.findById(userId).orElse(null);
-            if (user == null || !user.isActive()) {
-                unauthorized(response);
+            if (user == null) {
+                writeUnauthorized(request, response, "Access token is not valid for any user.");
+                return;
+            }
+            if (!user.isActive()) {
+                ApiErrorResponseWriter.write(
+                        response,
+                        objectMapper,
+                        HttpServletResponse.SC_FORBIDDEN,
+                        "account_inactive",
+                        "Account is deactivated.",
+                        request
+                );
                 return;
             }
             AuthUserPrincipal principal = new AuthUserPrincipal(user);
@@ -77,16 +97,22 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             authentication.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
             SecurityContextHolder.getContext().setAuthentication(authentication);
         } catch (JwtException | IllegalArgumentException ex) {
-            unauthorized(response);
+            writeUnauthorized(request, response, "Access token is invalid or expired.");
             return;
         }
 
         filterChain.doFilter(request, response);
     }
 
-    private static void unauthorized(HttpServletResponse response) throws IOException {
-        response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
-        response.setContentType("application/json");
-        response.getWriter().write("{\"error\":\"Unauthorized\"}");
+    private void writeUnauthorized(HttpServletRequest request, HttpServletResponse response, String message)
+            throws IOException {
+        ApiErrorResponseWriter.write(
+                response,
+                objectMapper,
+                HttpServletResponse.SC_UNAUTHORIZED,
+                "invalid_token",
+                message,
+                request
+        );
     }
 }

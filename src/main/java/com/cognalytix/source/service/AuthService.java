@@ -6,11 +6,17 @@ import com.cognalytix.source.domain.token.RefreshTokenRepository;
 import com.cognalytix.source.domain.user.Role;
 import com.cognalytix.source.domain.user.User;
 import com.cognalytix.source.domain.user.UserRepository;
-import com.cognalytix.source.dto.AuthResponse;
+import com.cognalytix.source.dto.AuthApiResponse;
+import com.cognalytix.source.dto.AuthTokensPayload;
+import com.cognalytix.source.dto.ChangeOwnPasswordRequest;
 import com.cognalytix.source.dto.LoginRequest;
+import com.cognalytix.source.dto.MessageResponse;
 import com.cognalytix.source.dto.RefreshRequest;
 import com.cognalytix.source.dto.RegisterRequest;
+import com.cognalytix.source.dto.UserPublicDto;
+import com.cognalytix.source.security.AuthUserPrincipal;
 import org.springframework.http.HttpStatus;
+import org.springframework.security.core.Authentication;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -20,6 +26,7 @@ import java.security.SecureRandom;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.Base64;
+import java.util.UUID;
 
 @Service
 public class AuthService {
@@ -31,22 +38,25 @@ public class AuthService {
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
     private final JwtProperties jwtProperties;
+    private final RefreshTokenHasher refreshTokenHasher;
 
     public AuthService(
             UserRepository userRepository,
             RefreshTokenRepository refreshTokenRepository,
             PasswordEncoder passwordEncoder,
             JwtService jwtService,
-            JwtProperties jwtProperties) {
+            JwtProperties jwtProperties,
+            RefreshTokenHasher refreshTokenHasher) {
         this.userRepository = userRepository;
         this.refreshTokenRepository = refreshTokenRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtService = jwtService;
         this.jwtProperties = jwtProperties;
+        this.refreshTokenHasher = refreshTokenHasher;
     }
 
     @Transactional
-    public AuthResponse register(RegisterRequest request) {
+    public AuthApiResponse register(RegisterRequest request) {
         if (userRepository.existsByEmailIgnoreCase(request.email())) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Email already registered");
         }
@@ -57,11 +67,11 @@ public class AuthService {
         user.setRole(Role.USER);
         user.setActive(true);
         userRepository.save(user);
-        return issueTokens(user);
+        return issueSession(user, "Registration successful.");
     }
 
     @Transactional
-    public AuthResponse login(LoginRequest request) {
+    public AuthApiResponse login(LoginRequest request) {
         User user = userRepository.findByEmailIgnoreCase(request.email().trim().toLowerCase())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid email or password"));
         if (!user.isActive()) {
@@ -70,13 +80,19 @@ public class AuthService {
         if (!passwordEncoder.matches(request.password(), user.getPasswordHash())) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid email or password");
         }
-        return issueTokens(user);
+        return issueSession(user, "Signed in successfully.");
     }
 
+    /**
+     * Refresh token rotation (RTR): previous refresh row is revoked; a new opaque refresh token is minted.
+     */
     @Transactional
-    public AuthResponse refresh(RefreshRequest request) {
-        RefreshToken stored = refreshTokenRepository.findByTokenAndRevokedFalse(request.refreshToken())
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid refresh token"));
+    public AuthApiResponse refresh(RefreshRequest request) {
+        String hash = refreshTokenHasher.hashOpaqueToken(request.refreshToken());
+        RefreshToken stored =
+                refreshTokenRepository.findByTokenHashAndRevokedFalse(hash).orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.UNAUTHORIZED,
+                        "Invalid refresh token"));
         if (stored.getExpiresAt().isBefore(Instant.now())) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Refresh token expired");
         }
@@ -84,29 +100,63 @@ public class AuthService {
         if (!user.isActive()) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Account is deactivated");
         }
-        String accessToken = jwtService.createAccessToken(user);
-        long expiresInSeconds = jwtProperties.accessTokenExpiryMs() / 1000;
-        return new AuthResponse(accessToken, request.refreshToken(), expiresInSeconds);
+        stored.setRevoked(true);
+        refreshTokenRepository.save(stored);
+
+        AuthApiResponse rotated = issueSession(user, "Access token refreshed.");
+        return rotated;
     }
 
     @Transactional
-    public void logout(RefreshRequest request) {
-        refreshTokenRepository.findByTokenAndRevokedFalse(request.refreshToken()).ifPresent(token -> {
-            token.setRevoked(true);
-            refreshTokenRepository.save(token);
-        });
+    public AuthApiResponse logout(RefreshRequest request, Authentication authentication) {
+        if (!(authentication.getPrincipal() instanceof AuthUserPrincipal principal)) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid session");
+        }
+        String hash = refreshTokenHasher.hashOpaqueToken(request.refreshToken());
+        RefreshToken stored =
+                refreshTokenRepository.findByTokenHashAndRevokedFalse(hash).orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.UNAUTHORIZED,
+                        "Invalid refresh token"));
+        if (!stored.getUser().getId().equals(principal.getId())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Refresh token does not belong to the signed-in user.");
+        }
+        stored.setRevoked(true);
+        refreshTokenRepository.save(stored);
+        return new AuthApiResponse("You have been signed out.", null, null);
     }
 
-    private AuthResponse issueTokens(User user) {
+    @Transactional
+    public MessageResponse changeOwnPassword(UUID userId, ChangeOwnPasswordRequest request) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found"));
+        if (!user.isActive()) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Account is deactivated");
+        }
+        if (!passwordEncoder.matches(request.currentPassword(), user.getPasswordHash())) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Current password is incorrect");
+        }
+        user.setPasswordHash(passwordEncoder.encode(request.newPassword()));
+        userRepository.save(user);
+        refreshTokenRepository.deleteByUser_Id(userId);
+        return new MessageResponse("Password has been updated. Sign in again on other devices; refresh tokens were cleared.");
+    }
+
+    private AuthApiResponse issueSession(User user, String message) {
         String accessToken = jwtService.createAccessToken(user);
+        String plainRefresh = newRefreshTokenValue();
         RefreshToken refresh = new RefreshToken();
         refresh.setUser(user);
-        refresh.setToken(newRefreshTokenValue());
+        refresh.setTokenHash(refreshTokenHasher.hashOpaqueToken(plainRefresh));
         refresh.setExpiresAt(Instant.now().plus(jwtProperties.refreshTokenExpiryDays(), ChronoUnit.DAYS));
         refresh.setRevoked(false);
         refreshTokenRepository.save(refresh);
         long expiresInSeconds = jwtProperties.accessTokenExpiryMs() / 1000;
-        return new AuthResponse(accessToken, refresh.getToken(), expiresInSeconds);
+        AuthTokensPayload tokens = new AuthTokensPayload(accessToken, plainRefresh, "Bearer", expiresInSeconds);
+        return new AuthApiResponse(message, tokens, toPublic(user));
+    }
+
+    private static UserPublicDto toPublic(User user) {
+        return new UserPublicDto(user.getId(), user.getName(), user.getEmail(), user.getRole().name());
     }
 
     private static String newRefreshTokenValue() {
