@@ -1,12 +1,12 @@
 package com.cognalytix.source.dto;
 
 import java.util.List;
+import java.util.UUID;
 
 public record MoodAnalysisPayload(
         String moodLabel,
+        UUID aggregateEmotionLabelId,
         int intensity,
         String insight,
         String copingTip,
-        List<String> themes
-) {
-}
+        List<String> themes) {}
