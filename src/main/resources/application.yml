@@ -34,7 +34,7 @@ spring:
         options:
           model: ${OLLAMA_MODEL:qwen3:14b}
           temperature: 0.3
-          num-predict: 512
+          num-predict: 2048
 
 #  mail:
 #    host: sandbox.smtp.mailtrap.io
@@ -62,6 +62,10 @@ app:
     core-pool-size: 4
     max-pool-size: 8
     queue-capacity: 100
+
+  # Set to false in tests or when Ollama is unavailable (skips scheduling; beans still load).
+  analysis:
+    enabled: ${ANALYSIS_ENABLED:true}
 
   scheduler:
     daily-insight-cron: "0 0 20 * * *"

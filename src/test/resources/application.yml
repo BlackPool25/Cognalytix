@@ -16,7 +16,21 @@ spring:
   flyway:
     enabled: false
 
+  ai:
+    ollama:
+      base-url: http://127.0.0.1:11435
+      chat:
+        options:
+          model: qwen3:14b
+
 app:
+  async:
+    core-pool-size: 2
+    max-pool-size: 2
+    queue-capacity: 20
+  analysis:
+    enabled: false
+
   jwt:
     secret: dGVzdC1zZWNyZXQta2V5LTEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMw==
     access-token-expiry-ms: 900000

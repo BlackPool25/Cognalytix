@@ -1,11 +1,11 @@
 package com.cognalytix.source.controller;
 
-import com.cognalytix.source.dto.AuthApiResponse;
-import com.cognalytix.source.dto.ChangeOwnPasswordRequest;
-import com.cognalytix.source.dto.LoginRequest;
+import com.cognalytix.source.dto.auth.AuthApiResponse;
+import com.cognalytix.source.dto.auth.ChangeOwnPasswordRequest;
+import com.cognalytix.source.dto.auth.LoginRequest;
 import com.cognalytix.source.dto.MessageResponse;
-import com.cognalytix.source.dto.RefreshRequest;
-import com.cognalytix.source.dto.RegisterRequest;
+import com.cognalytix.source.dto.auth.RefreshRequest;
+import com.cognalytix.source.dto.auth.RegisterRequest;
 import com.cognalytix.source.security.AuthUserPrincipal;
 import com.cognalytix.source.service.AuthService;
 import jakarta.validation.Valid;

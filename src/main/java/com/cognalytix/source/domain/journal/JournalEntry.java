@@ -43,6 +43,18 @@ public class JournalEntry {
     @Column(name = "analysis_status", nullable = false, length = 20)
     private AnalysisStatus analysisStatus = AnalysisStatus.PENDING;
 
+    @Column(name = "analysis_attempt_count", nullable = false)
+    private int analysisAttemptCount;
+
+    @Column(name = "analysis_fail_count", nullable = false)
+    private int analysisFailCount;
+
+    @Column(name = "analysis_in_progress", nullable = false)
+    private boolean analysisInProgress;
+
+    @Column(name = "last_analysis_error", length = 64)
+    private String lastAnalysisError;
+
     @Column(name = "deleted_at")
     private Instant deletedAt;
 
@@ -106,6 +118,38 @@ public class JournalEntry {
 
     public void setAnalysisStatus(AnalysisStatus analysisStatus) {
         this.analysisStatus = analysisStatus;
+    }
+
+    public int getAnalysisAttemptCount() {
+        return analysisAttemptCount;
+    }
+
+    public void setAnalysisAttemptCount(int analysisAttemptCount) {
+        this.analysisAttemptCount = analysisAttemptCount;
+    }
+
+    public int getAnalysisFailCount() {
+        return analysisFailCount;
+    }
+
+    public void setAnalysisFailCount(int analysisFailCount) {
+        this.analysisFailCount = analysisFailCount;
+    }
+
+    public boolean isAnalysisInProgress() {
+        return analysisInProgress;
+    }
+
+    public void setAnalysisInProgress(boolean analysisInProgress) {
+        this.analysisInProgress = analysisInProgress;
+    }
+
+    public String getLastAnalysisError() {
+        return lastAnalysisError;
+    }
+
+    public void setLastAnalysisError(String lastAnalysisError) {
+        this.lastAnalysisError = lastAnalysisError;
     }
 
     public Instant getDeletedAt() {

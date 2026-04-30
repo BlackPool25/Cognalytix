@@ -1,4 +1,4 @@
-package com.cognalytix.source.dto;
+package com.cognalytix.source.dto.auth;
 
 /**
  * Tokens returned to clients after register, login, refresh. Omitted on logout.

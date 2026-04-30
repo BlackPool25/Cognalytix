@@ -1,4 +1,4 @@
-package com.cognalytix.source.dto;
+package com.cognalytix.source.dto.auth;
 
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;

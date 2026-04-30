@@ -1,4 +1,4 @@
-package com.cognalytix.source.dto;
+package com.cognalytix.source.dto.journal;
 
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;

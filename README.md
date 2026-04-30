@@ -10,13 +10,11 @@ Spring Boot API for **Cognalytix**, a journaling and mood-insights product. This
 | API | Spring Web MVC, Jakarta Validation |
 | Security | JWT access tokens + opaque refresh tokens in PostgreSQL; passwords: **SHA-256(pepper)** then **BCrypt** (strength **10**) |
 | Data | Spring Data JPA, PostgreSQL **16**, Flyway migrations |
-| AI (planned) | Spring AI + Ollama (`qwen3:14b` by default) |
+| AI | Spring AI + Ollama (`qwen3:14b` by default) — **async** journal analysis after create/update/reanalyze; see [docs/journal-analysis-schema.md](docs/journal-analysis-schema.md) |
 
 ## Prerequisites
 
-- **JDK 25** (matches `pom.xml`; the project will not compile on older bytecode targets without changing `<java.version>`).
-- **PostgreSQL** (local or Docker). Default JDBC URL targets host port **5332** (see `docker-compose.yml` and the plan in `overview.md`).
-- **Maven** (wrapper `./mvnw` is included).
+- **Temurin JDK 25** (matches `pom.xml`). If **IntelliJ** shows “cannot find symbol” for types under `com.cognalytix.source.domain.*` while the files exist, set **File → Project Structure → Project** SDK to **25** and **Language level** to **25** (or SDK default), then **Maven** tool window → **Reload** (reimport), and **File → Invalidate Caches → Invalidate and Restart**. The project must be opened at the **folder that contains `pom.xml`**, not a parent or subfolder. Confirm **`./mvnw -q compile`** on the command line uses the same JDK (`java -version` in that terminal should be 25).
 
 ## Quick start
 
@@ -48,10 +46,12 @@ Main file: `src/main/resources/application.yml`. Important `app` settings:
 | `app.jwt.refresh-storage-secret` | Key material to **HMAC opaque refresh tokens before storing** (plain refresh tokens are never persisted). Set env **`REFRESH_STORAGE_SECRET`** in production. |
 | `app.security.password-pepper` | **64-character** secret appended to every password before BCrypt. Override with **`PASSWORD_PEPPER`** in production. |
 | `app.security.admin-allowed-emails` | Optional comma-separated emails. Users must already have **`role = ADMIN`** in the database; if this list is **non-empty**, only these emails may call admin APIs. Env **`ADMIN_ALLOWED_EMAILS`**. If **empty**, any **ADMIN** may use admin routes. |
+| `app.async.*` | Core / max pool size and queue for **`@Async("analysisExecutor")`** (journal LLM). |
+| `app.analysis.enabled` | If **`false`**, async analysis is skipped (no Ollama call). Env **`ANALYSIS_ENABLED`**. |
 
 Database URL and credentials use `spring.datasource.*` with env overrides **`DB_URL`**, **`DB_USER`**, **`DB_PASS`** (see `docker-compose.yml` for the in-network URL `jdbc:postgresql://postgres:5432/cognalytix`).
 
-**Type-safe `app.*` settings:** `JwtProperties` and `AppSecurityProperties` are Java records annotated with `@ConfigurationProperties` and registered via `@EnableConfigurationProperties` on `SourceApplication`. `JwtRefreshConfig` registers `RefreshTokenHasher`. `JacksonObjectMapperConfig` declares an `ObjectMapper` bean (`@ConditionalOnMissingBean`) so filters and JSON entry points serialize **`ApiErrorResponse`** reliably (needed with Boot 4 in tests).
+**Type-safe `app.*` settings:** `JwtProperties` and `AppSecurityProperties` are registered via `@EnableConfigurationProperties` on `SourceApplication`. `AsyncTaskProperties` (`app.async`) is bound in `config/AsyncConfig` for the analysis thread pool. `JwtRefreshConfig` registers `RefreshTokenHasher`. `JacksonObjectMapperConfig` declares an `ObjectMapper` bean (`@ConditionalOnMissingBean`) so filters and JSON entry points serialize **`ApiErrorResponse`** reliably (needed with Boot 4 in tests).
 
 ## Errors
 
@@ -140,9 +140,19 @@ Protected admin APIs (Bearer token; **`@adminAuth`**):
 
 ### Journal API
 
-JWT + **`ROLE_USER`** or **`ROLE_ADMIN`**: **`POST /api/journals`**, **`GET /api/journals`** (paginated), **`GET` / **`PUT`** `/api/journals/{id}`**, **`DELETE /api/journals/{id}`** (soft delete), **`DELETE /api/journals/{id}/permanent`** (hard delete). Entries use Flyway tables **`journal_entries`** (V4) and **`mood_analyses`** (V5).
+JWT + **`ROLE_USER`** or **`ROLE_ADMIN`**: **`POST /api/journals`**, **`GET /api/journals`** (paginated), **`GET` / **`PUT`** `/api/journals/{id}`**, **`POST /api/journals/{id}/reanalyze`** (rerun LLM), **`DELETE /api/journals/{id}`** (soft delete), **`DELETE /api/journals/{id}/permanent`** (hard delete). Tables: **`journal_entries`**, **`mood_analyses`**, **`journal_entry_sections`**, per-user label tables — see [docs/journal-analysis-schema.md](docs/journal-analysis-schema.md).
 
 Deactivate inactive users: login and refresh return **403** when `is_active` is false.
+
+## Journal AI analysis (Ollama)
+
+**Schema & LLM contract:** [docs/journal-analysis-schema.md](docs/journal-analysis-schema.md) (tables, JSON shape, error codes).
+
+**Config:** `spring.ai.ollama` in `application.yml` — `OLLAMA_BASE_URL` (default `http://localhost:11434`), `OLLAMA_MODEL` (default `qwen3:14b`), `num-predict: 2048` for structured JSON. **Disable** the worker without removing beans: `app.analysis.enabled=false` or env **`ANALYSIS_ENABLED=false`**. Thread pool: `app.async.*` (used by `@Async("analysisExecutor")`).
+
+**Flow:** `POST/PUT /api/journals` and `POST /api/journals/{id}/reanalyze` publish an event **after the DB transaction commits**; the LLM call runs in a background thread, then results are written to `mood_analyses`, `journal_entry_sections`, and per-user `user_topic_labels` / `user_emotion_labels`. Poll `GET /api/journals/{id}` until `analysisStatus` is `DONE` or `FAILED` (see `analysisState` for `lastErrorCode`).
+
+**Prereq:** Ollama running with the model pulled, e.g. `ollama pull qwen3:14b` (or set `OLLAMA_MODEL` to a model you have).
 
 ## Docker Compose
 
@@ -150,7 +160,7 @@ Deactivate inactive users: login and refresh return **403** when `is_active` is 
 
 ## Tests
 
-`src/test/resources/application.yml` uses an in-memory **H2** database (PostgreSQL compatibility mode), disables Flyway, mirrors `UserDetailsServiceAutoConfiguration` exclusion, and supplies JWT, pepper, and **`refresh-storage-secret`** values so **`SourceApplicationTests`** loads without Postgres.
+`src/test/resources/application.yml` uses an in-memory **H2** database (PostgreSQL compatibility mode), disables Flyway, mirrors `UserDetailsServiceAutoConfiguration` exclusion, sets **`app.analysis.enabled: false`** (no background Ollama in unit tests), and supplies JWT, pepper, **`app.async`**, and **`refresh-storage-secret`** so **`SourceApplicationTests`** loads without Postgres.
 
 ```bash
 ./mvnw test
@@ -163,27 +173,27 @@ Packages follow a common **layered** Spring Boot layout under `com.cognalytix.so
 ```
 src/main/java/com/cognalytix/source/
   SourceApplication.java
-  config/              Security, JWT filter, password encoder, @ConfigurationProperties beans
-  controller/          @RestController HTTP layer (auth, health, …)
-  service/             Business logic (e.g. AuthService, JwtService)
-  dto/                 Request/response records for APIs
-  domain/
-    user/              JPA user model + UserRepository
-    token/             Refresh token entity + RefreshTokenRepository
-    journal/           Journal entries + mood analysis entities & repositories
-    settings/          Security singleton (password pepper persistence)
-  security/            Spring Security types (e.g. AuthUserPrincipal)
+  analysis/            LLM journal analysis: JournalAnalysisService, events, LlmJournalAnalysisResult, prompts, error codes
+  config/              Security, JWT, async thread pool, @ConfigurationProperties (JWT, security, async)
+  controller/          @RestController layer (auth, health, journals, exports, vocabulary, admin)
+  service/             Business logic (auth, journal CRUD, labels, export)
+  dto/                 API DTOs (grouped: auth/, journal/, admin/, error/)
+  domain/              JPA entities and repositories (user, journal, token, settings)
+  security/            Auth principal, entry points, peppering, admin check
+  exception/           @RestControllerAdvice
+  util/                Shared helpers (e.g. LabelNormalizer)
 src/main/resources/
   application.yml
   db/migration/        Flyway SQL
   plans/overview.md    Product blueprint
+docs/                  In-repo technical notes (e.g. journal analysis schema)
 ```
 
 This keeps **HTTP**, **application services**, **persistence models**, and **framework wiring** in separate folders so the tree stays easy to navigate as the app grows.
 
 ## Roadmap (from blueprint)
 
-Async mood analysis (**Spring AI / Ollama**), scheduled daily/weekly/monthly insights, React dashboard, and Power BI analytics endpoints continue in `overview.md`; build them on top of journaling and auth shipped here first.
+Async mood analysis is **implemented** (see [Journal AI analysis](#journal-ai-analysis-ollama)). Scheduled daily/weekly/monthly insights, React dashboard, and extra Power BI analytics still follow `overview.md`.
 
 ## License
 

@@ -5,7 +5,7 @@ import com.cognalytix.source.domain.settings.SecuritySettingsRepository;
 import com.cognalytix.source.domain.token.RefreshTokenRepository;
 import com.cognalytix.source.domain.user.User;
 import com.cognalytix.source.domain.user.UserRepository;
-import com.cognalytix.source.dto.ChangeServerPepperRequest;
+import com.cognalytix.source.dto.auth.ChangeServerPepperRequest;
 import com.cognalytix.source.dto.MessageResponse;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;

@@ -1,5 +1,6 @@
-package com.cognalytix.source.dto;
+package com.cognalytix.source.dto.auth;
 
+import com.cognalytix.source.dto.user.UserPublicDto;
 import com.fasterxml.jackson.annotation.JsonInclude;
 
 /**

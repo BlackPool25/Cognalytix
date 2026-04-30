@@ -1,4 +1,4 @@
-package com.cognalytix.source.dto;
+package com.cognalytix.source.dto.journal;
 
 import java.util.List;
 import java.util.UUID;

@@ -33,8 +33,12 @@ public class MoodAnalysis {
     @JoinColumn(name = "user_id", nullable = false)
     private User user;
 
-    @Column(name = "mood_label", nullable = false, length = 20)
+    @Column(name = "mood_label", nullable = false, length = 200)
     private String moodLabel;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "aggregate_emotion_label_id")
+    private UserEmotionLabel aggregateEmotionLabel;
 
     @Column(nullable = false, columnDefinition = "SMALLINT")
     private short intensity;
@@ -82,6 +86,14 @@ public class MoodAnalysis {
 
     public void setMoodLabel(String moodLabel) {
         this.moodLabel = moodLabel;
+    }
+
+    public UserEmotionLabel getAggregateEmotionLabel() {
+        return aggregateEmotionLabel;
+    }
+
+    public void setAggregateEmotionLabel(UserEmotionLabel aggregateEmotionLabel) {
+        this.aggregateEmotionLabel = aggregateEmotionLabel;
     }
 
     public short getIntensity() {

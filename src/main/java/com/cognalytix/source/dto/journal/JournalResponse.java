@@ -1,6 +1,4 @@
-package com.cognalytix.source.dto;
-
-import com.cognalytix.source.dto.journal.JournalAnalysisStatePayload;
+package com.cognalytix.source.dto.journal;
 
 import java.time.Instant;
 import java.util.List;

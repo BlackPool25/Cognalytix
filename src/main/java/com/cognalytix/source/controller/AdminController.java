@@ -1,8 +1,8 @@
 package com.cognalytix.source.controller;
 
-import com.cognalytix.source.dto.AdminSetUserPasswordRequest;
-import com.cognalytix.source.dto.AdminUserActionResponse;
-import com.cognalytix.source.dto.ChangeServerPepperRequest;
+import com.cognalytix.source.dto.admin.AdminSetUserPasswordRequest;
+import com.cognalytix.source.dto.admin.AdminUserActionResponse;
+import com.cognalytix.source.dto.auth.ChangeServerPepperRequest;
 import com.cognalytix.source.dto.MessageResponse;
 import com.cognalytix.source.security.AuthUserPrincipal;
 import com.cognalytix.source.service.AdminService;

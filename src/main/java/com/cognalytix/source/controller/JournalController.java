@@ -1,7 +1,7 @@
 package com.cognalytix.source.controller;
 
-import com.cognalytix.source.dto.JournalResponse;
-import com.cognalytix.source.dto.JournalWriteRequest;
+import com.cognalytix.source.dto.journal.JournalResponse;
+import com.cognalytix.source.dto.journal.JournalWriteRequest;
 import com.cognalytix.source.security.AuthUserPrincipal;
 import com.cognalytix.source.service.JournalService;
 import jakarta.validation.Valid;
@@ -69,6 +69,12 @@ public class JournalController {
     public void softDelete(@PathVariable("id") UUID id, Authentication authentication) {
         AuthUserPrincipal p = (AuthUserPrincipal) authentication.getPrincipal();
         journalService.softDelete(id, p.getId());
+    }
+
+    @PostMapping("/{id}/reanalyze")
+    public JournalResponse reanalyze(@PathVariable("id") UUID id, Authentication authentication) {
+        AuthUserPrincipal p = (AuthUserPrincipal) authentication.getPrincipal();
+        return journalService.reanalyze(id, p.getId());
     }
 
     @DeleteMapping("/{id}/permanent")

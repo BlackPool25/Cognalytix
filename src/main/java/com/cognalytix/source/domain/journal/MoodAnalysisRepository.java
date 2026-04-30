@@ -8,4 +8,6 @@ import java.util.UUID;
 public interface MoodAnalysisRepository extends JpaRepository<MoodAnalysis, UUID> {
 
     Optional<MoodAnalysis> findByEntryId(UUID entryId);
+
+    void deleteByEntryId(UUID entryId);
 }
