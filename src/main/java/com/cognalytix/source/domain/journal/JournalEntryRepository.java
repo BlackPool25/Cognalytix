@@ -9,6 +9,8 @@ import java.util.UUID;
 
 public interface JournalEntryRepository extends JpaRepository<JournalEntry, UUID> {
 
+    long countByUser_IdAndDeletedAtIsNull(UUID userId);
+
     Page<JournalEntry> findAllByUserIdAndDeletedAtIsNullOrderByCreatedAtDesc(UUID userId, Pageable pageable);
 
     Optional<JournalEntry> findByIdAndUserId(UUID id, UUID userId);

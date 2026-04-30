@@ -2,6 +2,8 @@ package com.cognalytix.source.service;
 
 import com.cognalytix.source.analysis.JournalEntryAnalysisEvent;
 import com.cognalytix.source.domain.journal.AnalysisStatus;
+import com.cognalytix.source.domain.journal.GrowthInsightRepository;
+import com.cognalytix.source.domain.journal.GrowthInsightType;
 import com.cognalytix.source.domain.journal.JournalEntry;
 import com.cognalytix.source.domain.journal.JournalEntryRepository;
 import com.cognalytix.source.domain.journal.JournalEntrySection;
@@ -38,6 +40,7 @@ public class JournalService {
     private final JournalEntrySectionRepository journalEntrySectionRepository;
     private final UserRepository userRepository;
     private final ApplicationEventPublisher eventPublisher;
+    private final GrowthInsightRepository growthInsightRepository;
     private final boolean analysisEnabled;
 
     public JournalService(
@@ -46,12 +49,14 @@ public class JournalService {
             JournalEntrySectionRepository journalEntrySectionRepository,
             UserRepository userRepository,
             ApplicationEventPublisher eventPublisher,
+            GrowthInsightRepository growthInsightRepository,
             @Value("${app.analysis.enabled:true}") boolean analysisEnabled) {
         this.journalEntryRepository = journalEntryRepository;
         this.moodAnalysisRepository = moodAnalysisRepository;
         this.journalEntrySectionRepository = journalEntrySectionRepository;
         this.userRepository = userRepository;
         this.eventPublisher = eventPublisher;
+        this.growthInsightRepository = growthInsightRepository;
         this.analysisEnabled = analysisEnabled;
     }
 
@@ -110,6 +115,7 @@ public class JournalService {
         entry.setContent(request.content());
         entry.setWordCount(countWords(request.content()));
         entry.setAnalysisStatus(AnalysisStatus.PENDING);
+        growthInsightRepository.deleteByTriggerEntryIdAndInsightType(entry.getId(), GrowthInsightType.POST_ENTRY);
         moodAnalysisRepository.findByEntryId(entry.getId()).ifPresent(moodAnalysisRepository::delete);
         journalEntrySectionRepository.deleteByJournalEntryId(entry.getId());
         journalEntryRepository.save(entry);
@@ -124,6 +130,7 @@ public class JournalService {
         JournalEntry entry = journalEntryRepository
                 .findByIdAndUserIdAndDeletedAtIsNull(id, userId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Journal entry not found"));
+        growthInsightRepository.deleteByTriggerEntryIdAndInsightType(entry.getId(), GrowthInsightType.POST_ENTRY);
         moodAnalysisRepository.findByEntryId(entry.getId()).ifPresent(moodAnalysisRepository::delete);
         journalEntrySectionRepository.deleteByJournalEntryId(entry.getId());
         entry.setAnalysisStatus(AnalysisStatus.PENDING);

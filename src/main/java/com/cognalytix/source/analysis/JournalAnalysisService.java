@@ -45,6 +45,7 @@ public class JournalAnalysisService {
     private final MoodAnalysisRepository moodAnalysisRepository;
     private final JournalEntrySectionRepository journalEntrySectionRepository;
     private final UserLabelService userLabelService;
+    private final PostEntryMirrorService postEntryMirrorService;
     private final TransactionTemplate tx;
     private final boolean analysisEnabled;
 
@@ -54,6 +55,7 @@ public class JournalAnalysisService {
             MoodAnalysisRepository moodAnalysisRepository,
             JournalEntrySectionRepository journalEntrySectionRepository,
             UserLabelService userLabelService,
+            PostEntryMirrorService postEntryMirrorService,
             PlatformTransactionManager platformTransactionManager,
             @Value("${app.analysis.enabled:true}") boolean analysisEnabled) {
         this.chatClient = chatClientBuilder.build();
@@ -61,6 +63,7 @@ public class JournalAnalysisService {
         this.moodAnalysisRepository = moodAnalysisRepository;
         this.journalEntrySectionRepository = journalEntrySectionRepository;
         this.userLabelService = userLabelService;
+        this.postEntryMirrorService = postEntryMirrorService;
         this.tx = new TransactionTemplate(platformTransactionManager);
         this.tx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         this.analysisEnabled = analysisEnabled;
@@ -104,6 +107,7 @@ public class JournalAnalysisService {
         }
         try {
             saveSuccess(ctx.entryId(), ctx.userId(), result);
+            postEntryMirrorService.runAfterSuccessfulAnalysis(ctx.entryId());
         } catch (Exception e) {
             log.warn("Persist failed for entry {}: {}", entryId, e.getMessage());
             markFailed(entryId, AnalysisErrorCode.PERSIST_FAILED, e.getClass().getSimpleName());

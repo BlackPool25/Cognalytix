@@ -1,5 +1,6 @@
 package com.cognalytix.source.service;
 
+import com.cognalytix.source.analysis.FamilyResolutionService;
 import com.cognalytix.source.domain.journal.UserEmotionLabel;
 import com.cognalytix.source.domain.journal.UserEmotionLabelRepository;
 import com.cognalytix.source.domain.journal.UserTopicLabel;
@@ -25,14 +26,17 @@ public class UserLabelService {
     private final UserTopicLabelRepository userTopicLabelRepository;
     private final UserEmotionLabelRepository userEmotionLabelRepository;
     private final UserRepository userRepository;
+    private final FamilyResolutionService familyResolutionService;
 
     public UserLabelService(
             UserTopicLabelRepository userTopicLabelRepository,
             UserEmotionLabelRepository userEmotionLabelRepository,
-            UserRepository userRepository) {
+            UserRepository userRepository,
+            FamilyResolutionService familyResolutionService) {
         this.userTopicLabelRepository = userTopicLabelRepository;
         this.userEmotionLabelRepository = userEmotionLabelRepository;
         this.userRepository = userRepository;
+        this.familyResolutionService = familyResolutionService;
     }
 
     @Transactional(readOnly = true)
@@ -116,13 +120,16 @@ public class UserLabelService {
         String key = validateAndNormalizeKey(rawPhrasing);
         return userTopicLabelRepository
                 .findByUserIdAndNormalizedKey(user.getId(), key)
-                .orElseGet(() -> {
-                    UserTopicLabel l = new UserTopicLabel();
-                    l.setUser(user);
-                    l.setNormalizedKey(key);
-                    l.setLabel(rawPhrasing.trim());
-                    return userTopicLabelRepository.save(l);
-                });
+                .orElseGet(
+                        () -> {
+                            UserTopicLabel l = new UserTopicLabel();
+                            l.setUser(user);
+                            l.setNormalizedKey(key);
+                            l.setLabel(rawPhrasing.trim());
+                            UserTopicLabel saved = userTopicLabelRepository.save(l);
+                            familyResolutionService.assignFamilyForNewTopic(saved);
+                            return userTopicLabelRepository.findById(saved.getId()).orElseThrow();
+                        });
     }
 
     @Transactional
@@ -131,13 +138,16 @@ public class UserLabelService {
         String key = validateAndNormalizeKey(rawPhrasing);
         return userEmotionLabelRepository
                 .findByUserIdAndNormalizedKey(user.getId(), key)
-                .orElseGet(() -> {
-                    UserEmotionLabel l = new UserEmotionLabel();
-                    l.setUser(user);
-                    l.setNormalizedKey(key);
-                    l.setLabel(rawPhrasing.trim());
-                    return userEmotionLabelRepository.save(l);
-                });
+                .orElseGet(
+                        () -> {
+                            UserEmotionLabel l = new UserEmotionLabel();
+                            l.setUser(user);
+                            l.setNormalizedKey(key);
+                            l.setLabel(rawPhrasing.trim());
+                            UserEmotionLabel saved = userEmotionLabelRepository.save(l);
+                            familyResolutionService.assignFamilyForNewEmotion(saved);
+                            return userEmotionLabelRepository.findById(saved.getId()).orElseThrow();
+                        });
     }
 
     private static String validateAndNormalizeKey(String rawPhrasing) {

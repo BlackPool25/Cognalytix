@@ -36,12 +36,18 @@ public class UserEmotionLabel {
     @Column(name = "normalized_key", nullable = false, length = 200)
     private String normalizedKey;
 
+    @Column(name = "family_key", nullable = false, length = 100)
+    private String familyKey;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
     @PrePersist
     void onCreate() {
         createdAt = Instant.now();
+        if (familyKey == null || familyKey.isBlank()) {
+            familyKey = normalizedKey;
+        }
     }
 
     public UUID getId() {
@@ -70,6 +76,14 @@ public class UserEmotionLabel {
 
     public void setNormalizedKey(String normalizedKey) {
         this.normalizedKey = normalizedKey;
+    }
+
+    public String getFamilyKey() {
+        return familyKey;
+    }
+
+    public void setFamilyKey(String familyKey) {
+        this.familyKey = familyKey;
     }
 
     public Instant getCreatedAt() {

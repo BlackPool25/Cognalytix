@@ -10,7 +10,7 @@ Spring Boot API for **Cognalytix**, a journaling and mood-insights product. This
 | API | Spring Web MVC, Jakarta Validation |
 | Security | JWT access tokens + opaque refresh tokens in PostgreSQL; passwords: **SHA-256(pepper)** then **BCrypt** (strength **10**) |
 | Data | Spring Data JPA, PostgreSQL **16**, Flyway migrations |
-| AI | Spring AI + Ollama (`qwen3:14b` by default) — **async** journal analysis after create/update/reanalyze; see [docs/journal-analysis-schema.md](docs/journal-analysis-schema.md) |
+| AI | Spring AI + Ollama (`qwen3:14b` by default) — **async** journal analysis after create/update/reanalyze; **label `family_key`** (semantic clustering) on new topic/emotion labels; **post-entry mirror** (SQL drift + structured narration) persisted in **`growth_insights`**; see [docs/journal-analysis-schema.md](docs/journal-analysis-schema.md) |
 
 ## Prerequisites
 
@@ -47,7 +47,7 @@ Main file: `src/main/resources/application.yml`. Important `app` settings:
 | `app.security.password-pepper` | **64-character** secret appended to every password before BCrypt. Override with **`PASSWORD_PEPPER`** in production. |
 | `app.security.admin-allowed-emails` | Optional comma-separated emails. Users must already have **`role = ADMIN`** in the database; if this list is **non-empty**, only these emails may call admin APIs. Env **`ADMIN_ALLOWED_EMAILS`**. If **empty**, any **ADMIN** may use admin routes. |
 | `app.async.*` | Core / max pool size and queue for **`@Async("analysisExecutor")`** (journal LLM). |
-| `app.analysis.enabled` | If **`false`**, async analysis is skipped (no Ollama call). Env **`ANALYSIS_ENABLED`**. |
+| `app.analysis.enabled` | If **`false`**, async analysis is skipped (no Ollama call) and **family-key LLM** + **post-entry mirror** are skipped. Env **`ANALYSIS_ENABLED`**. |
 
 Database URL and credentials use `spring.datasource.*` with env overrides **`DB_URL`**, **`DB_USER`**, **`DB_PASS`** (see `docker-compose.yml` for the in-network URL `jdbc:postgresql://postgres:5432/cognalytix`).
 
@@ -140,9 +140,29 @@ Protected admin APIs (Bearer token; **`@adminAuth`**):
 
 ### Journal API
 
-JWT + **`ROLE_USER`** or **`ROLE_ADMIN`**: **`POST /api/journals`**, **`GET /api/journals`** (paginated), **`GET` / **`PUT`** `/api/journals/{id}`**, **`POST /api/journals/{id}/reanalyze`** (rerun LLM), **`DELETE /api/journals/{id}`** (soft delete), **`DELETE /api/journals/{id}/permanent`** (hard delete). Tables: **`journal_entries`**, **`mood_analyses`**, **`journal_entry_sections`**, per-user label tables — see [docs/journal-analysis-schema.md](docs/journal-analysis-schema.md).
+JWT + **`ROLE_USER`** or **`ROLE_ADMIN`**:
+
+- **`POST /api/journals`** — create entry; queues analysis when enabled.
+- **`GET /api/journals`** — paginated list.
+- **`GET /api/journals/{id}`**, **`PUT /api/journals/{id}`** — read/update (update clears analysis and re-queues).
+- **`POST /api/journals/{id}/reanalyze`** — rerun analysis.
+- **`DELETE /api/journals/{id}`** — soft delete; **`DELETE /api/journals/{id}/permanent`** — hard delete.
+
+Tables: **`journal_entries`**, **`mood_analyses`**, **`journal_entry_sections`**, **`user_topic_labels`**, **`user_emotion_labels`** (with **`family_key`** for cross-entry patterns), **`growth_insights`** — see [docs/journal-analysis-schema.md](docs/journal-analysis-schema.md).
 
 Deactivate inactive users: login and refresh return **403** when `is_active` is false.
+
+### Growth / mirror API (post-entry)
+
+After analysis completes, the client can load a **structured** mirror payload (not free-form chat): same-day **`day`** snapshot (sections include topic/emotion **family keys**) and, when pattern rules match, a **`trajectory`** block with **`mirrorCard`** (headline, trajectory line, day anchor, integrated body, direction) plus **`trajectoryFacts`** (aggregates only).
+
+| Method | Path | Purpose |
+|--------|------|--------|
+| `GET` | **`/api/insights/growth/latest?entryId=<uuid>`** | Latest **`POST_ENTRY`** insight for that journal; **`mirrorReady`** when `analysisStatus` is **`DONE`**; **`hasTrajectory`** when a `growth_insights` row exists. |
+
+**Typical flow:** poll **`GET /api/journals/{id}`** until **`analysisStatus`** is **`DONE`**, then call **`GET /api/insights/growth/latest?entryId={id}`**. Trajectory appears only when thresholds are met (e.g. enough prior entries and detectable emotion/intensity drift on a topic family); otherwise **`day`** still returns the entry-level insight and section structure.
+
+Updating or reanalyzing an entry removes any existing **`POST_ENTRY`** row for that `trigger_entry_id` before new analysis runs.
 
 ## Journal AI analysis (Ollama)
 
@@ -150,7 +170,9 @@ Deactivate inactive users: login and refresh return **403** when `is_active` is 
 
 **Config:** `spring.ai.ollama` in `application.yml` — `OLLAMA_BASE_URL` (default `http://localhost:11434`), `OLLAMA_MODEL` (default `qwen3:14b`), `num-predict: 2048` for structured JSON. **Disable** the worker without removing beans: `app.analysis.enabled=false` or env **`ANALYSIS_ENABLED=false`**. Thread pool: `app.async.*` (used by `@Async("analysisExecutor")`).
 
-**Flow:** `POST/PUT /api/journals` and `POST /api/journals/{id}/reanalyze` publish an event **after the DB transaction commits**; the LLM call runs in a background thread, then results are written to `mood_analyses`, `journal_entry_sections`, and per-user `user_topic_labels` / `user_emotion_labels`. Poll `GET /api/journals/{id}` until `analysisStatus` is `DONE` or `FAILED` (see `analysisState` for `lastErrorCode`).
+**Flow:** `POST/PUT /api/journals` and `POST /api/journals/{id}/reanalyze` publish an event **after the DB transaction commits**; the LLM call runs in a background thread, then results are written to `mood_analyses`, `journal_entry_sections`, and per-user `user_topic_labels` / `user_emotion_labels`. **New labels** get a semantic **`family_key`** via a small LLM JSON call (fallback: `normalized_key`). After a successful save, a **separate transaction** may run **pattern detection** (JDBC aggregates only) and optionally a **mirror narration LLM** that sees **structured facts + same-day snapshot**, not raw journal prose; when a drift pattern is found, a **`growth_insights`** row is stored (`insight_type = POST_ENTRY`, `pattern_data` JSON + `narration`). Poll `GET /api/journals/{id}` until `analysisStatus` is `DONE` or `FAILED` (see `analysisState` for `lastErrorCode`), then **`GET /api/insights/growth/latest?entryId=…`** for the mirror DTO.
+
+Flyway **`V8`** adds **`family_key`** columns and **`growth_insights`**.
 
 **Prereq:** Ollama running with the model pulled, e.g. `ollama pull qwen3:14b` (or set `OLLAMA_MODEL` to a model you have).
 
@@ -173,12 +195,12 @@ Packages follow a common **layered** Spring Boot layout under `com.cognalytix.so
 ```
 src/main/java/com/cognalytix/source/
   SourceApplication.java
-  analysis/            LLM journal analysis: JournalAnalysisService, events, LlmJournalAnalysisResult, prompts, error codes
+  analysis/            Journal analysis + mirror pipeline: JournalAnalysisService; FamilyResolutionService; PatternAnalysisService; MirrorNarrationService; PostEntryMirrorService; events; prompts; LlmJournalAnalysisResult
   config/              Security, JWT, async thread pool, @ConfigurationProperties (JWT, security, async)
-  controller/          @RestController layer (auth, health, journals, exports, vocabulary, admin)
-  service/             Business logic (auth, journal CRUD, labels, export)
-  dto/                 API DTOs (grouped: auth/, journal/, admin/, error/)
-  domain/              JPA entities and repositories (user, journal, token, settings)
+  controller/          @RestController layer (auth, health, journals, growth insights, exports, vocabulary, admin)
+  service/             Business logic (auth, journal CRUD, labels, growth mirror read model, export)
+  dto/                 API DTOs (grouped: auth/, journal/, insights/, admin/, error/)
+  domain/              JPA entities and repositories (user, journal, growth insights, token, settings)
   security/            Auth principal, entry points, peppering, admin check
   exception/           @RestControllerAdvice
   util/                Shared helpers (e.g. LabelNormalizer)
@@ -193,7 +215,7 @@ This keeps **HTTP**, **application services**, **persistence models**, and **fra
 
 ## Roadmap (from blueprint)
 
-Async mood analysis is **implemented** (see [Journal AI analysis](#journal-ai-analysis-ollama)). Scheduled daily/weekly/monthly insights, React dashboard, and extra Power BI analytics still follow `overview.md`.
+**Implemented:** async per-entry journal analysis, **`family_key`** clustering on labels, **post-entry** growth/mirror (`growth_insights` + **`GET /api/insights/growth/latest`**). **Still to do** (per `overview.md`): scheduled weekly/monthly/milestone insight jobs, React dashboard, and other blueprint items.
 
 ## License
 
