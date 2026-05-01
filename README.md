@@ -148,6 +148,8 @@ JWT + **`ROLE_USER`** or **`ROLE_ADMIN`**:
 - **`POST /api/journals/{id}/reanalyze`** — rerun analysis.
 - **`DELETE /api/journals/{id}`** — soft delete; **`DELETE /api/journals/{id}/permanent`** — hard delete.
 
+**List vs detail:** **`GET /api/journals`** (paginated) omits **`sections`** on each item to keep payloads small; **`GET /api/journals/{id}`** returns full **`sections`** and is the right call when you need topic/emotion labels for one entry.
+
 Tables: **`journal_entries`**, **`mood_analyses`**, **`journal_entry_sections`**, **`user_topic_labels`**, **`user_emotion_labels`** (with **`family_key`** for cross-entry patterns), **`growth_insights`** — see [docs/journal-analysis-schema.md](docs/journal-analysis-schema.md).
 
 Deactivate inactive users: login and refresh return **403** when `is_active` is false.
@@ -160,7 +162,13 @@ After analysis completes, the client can load a **structured** mirror payload (n
 |--------|------|--------|
 | `GET` | **`/api/insights/growth/latest?entryId=<uuid>`** | Latest **`POST_ENTRY`** insight for that journal; **`mirrorReady`** when `analysisStatus` is **`DONE`**; **`hasTrajectory`** when a `growth_insights` row exists. |
 
-**Typical flow:** poll **`GET /api/journals/{id}`** until **`analysisStatus`** is **`DONE`**, then call **`GET /api/insights/growth/latest?entryId={id}`**. Trajectory appears only when thresholds are met (e.g. enough prior entries and detectable emotion/intensity drift on a topic family); otherwise **`day`** still returns the entry-level insight and section structure.
+**Typical flow:** poll **`GET /api/journals/{id}`** until **`analysisStatus`** is **`DONE`** or **`FAILED`**, then call **`GET /api/insights/growth/latest?entryId={id}`**.
+
+**Timing (trajectory vs `DONE`):** Per-entry analysis and persistence finish first; **`POST_ENTRY`** `growth_insights` (pattern SQL + optional mirror narration LLM) runs in a **follow-up transaction** on the analysis worker. So the journal can be **`DONE`** while **`hasTrajectory`** is still **`false`** for a short window even when a pattern will be stored. **Retry `growth/latest` a few times** (e.g. every 2–5s) or wait briefly before treating **`hasTrajectory`** as final.
+
+**When `hasTrajectory` is true:** Pattern rules must match (at minimum: **≥ 3** non-deleted journals for the user; **≥ 2** **earlier** entries—by `created_at` before this one—each with at least one section sharing the **same topic `family_key`** as a section in **this** entry; plus **emotion-family change** or **meaningful intensity shift** between prior aggregates and this entry for that family). Reusing the same real-world theme across entries helps the model reuse topic labels from the growing vocabulary.
+
+If rules do not match, **`day`** is still populated (entry insight + sections with family keys) and **`trajectory`** stays **`null`**.
 
 Updating or reanalyzing an entry removes any existing **`POST_ENTRY`** row for that `trigger_entry_id` before new analysis runs.
 
@@ -170,7 +178,7 @@ Updating or reanalyzing an entry removes any existing **`POST_ENTRY`** row for t
 
 **Config:** `spring.ai.ollama` in `application.yml` — `OLLAMA_BASE_URL` (default `http://localhost:11434`), `OLLAMA_MODEL` (default `qwen3:14b`), `num-predict: 2048` for structured JSON. **Disable** the worker without removing beans: `app.analysis.enabled=false` or env **`ANALYSIS_ENABLED=false`**. Thread pool: `app.async.*` (used by `@Async("analysisExecutor")`).
 
-**Flow:** `POST/PUT /api/journals` and `POST /api/journals/{id}/reanalyze` publish an event **after the DB transaction commits**; the LLM call runs in a background thread, then results are written to `mood_analyses`, `journal_entry_sections`, and per-user `user_topic_labels` / `user_emotion_labels`. **New labels** get a semantic **`family_key`** via a small LLM JSON call (fallback: `normalized_key`). After a successful save, a **separate transaction** may run **pattern detection** (JDBC aggregates only) and optionally a **mirror narration LLM** that sees **structured facts + same-day snapshot**, not raw journal prose; when a drift pattern is found, a **`growth_insights`** row is stored (`insight_type = POST_ENTRY`, `pattern_data` JSON + `narration`). Poll `GET /api/journals/{id}` until `analysisStatus` is `DONE` or `FAILED` (see `analysisState` for `lastErrorCode`), then **`GET /api/insights/growth/latest?entryId=…`** for the mirror DTO.
+**Flow:** `POST/PUT /api/journals` and `POST /api/journals/{id}/reanalyze` publish an event **after the DB transaction commits**; the LLM call runs in a background thread, then results are written to `mood_analyses`, `journal_entry_sections`, and per-user `user_topic_labels` / `user_emotion_labels`. **New labels** get a semantic **`family_key`** via a small LLM JSON call (fallback: `normalized_key`). After a successful save, a **separate transaction** may run **pattern detection** (JDBC aggregates only) and optionally a **mirror narration LLM** that sees **structured facts + same-day snapshot**, not raw journal prose; when a drift pattern is found, a **`growth_insights`** row is stored (`insight_type = POST_ENTRY`, `pattern_data` JSON + `narration`). Poll `GET /api/journals/{id}` until `analysisStatus` is `DONE` or `FAILED` (see `analysisState` for `lastErrorCode`), then **`GET /api/insights/growth/latest?entryId=…`** for the mirror DTO — **`hasTrajectory`** may appear **slightly after** `DONE` (see **Growth / mirror API** § timing).
 
 Flyway **`V8`** adds **`family_key`** columns and **`growth_insights`**.
 
