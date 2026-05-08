@@ -10,17 +10,15 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
 
-/**
- * Assigns a semantic {@code family_key} once when a new label row is created (LLM); falls back to
- * {@code normalized_key} on failure.
- */
 @Service
 public class FamilyResolutionService {
 
     private static final Logger log = LoggerFactory.getLogger(FamilyResolutionService.class);
+    private static final int MAX_RETRIES = 2;
 
     private final ChatClient chatClient;
     private final UserTopicLabelRepository topicLabelRepository;
@@ -47,7 +45,12 @@ public class FamilyResolutionService {
                 .findById(id)
                 .ifPresent(
                         loaded -> {
-                            String key = resolveWithLlmOrFallback(loaded.getLabel(), "topic", loaded.getNormalizedKey());
+                            String key = resolveWithLlmOrFallback(
+                                    loaded.getDisplayLabel(),
+                                    "topic",
+                                    loaded.getNormalizedKey(),
+                                    loaded.getUser().getId()
+                            );
                             loaded.setFamilyKey(key);
                             topicLabelRepository.save(loaded);
                         });
@@ -62,39 +65,81 @@ public class FamilyResolutionService {
                 .findById(id)
                 .ifPresent(
                         loaded -> {
-                            String key = resolveWithLlmOrFallback(loaded.getLabel(), "emotion", loaded.getNormalizedKey());
+                            String key = resolveWithLlmOrFallback(
+                                    loaded.getDisplayLabel(),
+                                    "emotion",
+                                    loaded.getNormalizedKey(),
+                                    loaded.getUser().getId()
+                            );
                             loaded.setFamilyKey(key);
                             emotionLabelRepository.save(loaded);
                         });
     }
 
-    private String resolveWithLlmOrFallback(String labelText, String axis, String normalizedFallback) {
-        try {
-            String system =
-                    """
-                    You assign ONE stable semantic cluster slug for a user's journaling label.
-                    Return ONLY valid JSON: {"familyKey":"<slug>"}.
-                    Rules: lowercase ASCII letters, digits, underscores only; 3–60 chars; no spaces; no quotes inside slug.
-                    The slug groups this label with future paraphrases (e.g. "job pressure" and "work stress" → work_stress).
-                    Axis is "%s" (topic = life area / subject; emotion = felt tone).
-                    """.formatted(axis);
-            LlmFamilyKeyResponse r =
-                    chatClient
-                            .prompt()
-                            .system(system.strip())
-                            .user("Label text: " + labelText)
-                            .call()
-                            .entity(LlmFamilyKeyResponse.class);
-            if (r != null && r.familyKey() != null) {
-                String s = sanitizeFamilyKey(r.familyKey());
-                if (s != null && !s.isBlank()) {
-                    return s;
+    private String resolveWithLlmOrFallback(String labelText, String axis, String normalizedFallback, UUID userId) {
+        String sanitizedLabel = sanitizeLabel(labelText);
+        List<String> existingFamilies = getExistingFamilyKeys(axis, userId);
+
+        for (int attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+            try {
+                String system = buildSystemPrompt(axis, existingFamilies);
+                LlmFamilyKeyResponse r = chatClient
+                        .prompt()
+                        .system(system)
+                        .user("Label: " + sanitizedLabel)
+                        .call()
+                        .entity(LlmFamilyKeyResponse.class);
+
+                if (r != null && r.familyKey() != null) {
+                    String sanitized = sanitizeFamilyKey(r.familyKey());
+                    if (isValidFamilyKey(sanitized)) {
+                        return sanitized;
+                    }
                 }
+            } catch (Exception e) {
+                log.debug("Family LLM attempt {} failed for {} label '{}': {}", attempt, axis, labelText, e.getMessage());
             }
-        } catch (Exception e) {
-            log.debug("Family LLM failed for {} label '{}': {}", axis, labelText, e.getMessage());
+
+            if (attempt == MAX_RETRIES) {
+                return deriveFallbackFamily(sanitizedLabel);
+            }
         }
-        return truncateKey(normalizedFallback);
+
+        return deriveFallbackFamily(sanitizedLabel);
+    }
+
+    private String buildSystemPrompt(String axis, List<String> existingFamilies) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("You are a label classifier. Assign ONE stable semantic cluster slug for a journaling label.\n");
+        sb.append("Return ONLY this JSON — no explanation, no markdown, no extra text:\n");
+        sb.append("{\"familyKey\":\"<slug>\"}\n\n");
+        sb.append("RULES:\n");
+        sb.append("- lowercase letters, digits, and underscores only\n");
+        sb.append("- 3–60 characters, no spaces, no quotes in slug\n");
+        sb.append("- The slug groups this label with future paraphrases (e.g., \"job pressure\" and \"work stress\" → work_stress)\n");
+        sb.append("- Axis: \"").append(axis).append("\" — topic = life area/subject (e.g., work_project_stress); ");
+        sb.append("emotion = felt tone (e.g., frustration_mild-melancholy)\n");
+        sb.append("- Create a new family ONLY if no existing family closely matches\n");
+        sb.append("- Keep family names short and reusable (e.g., work_stress, social_joy, health_anxiety)\n");
+
+        if (!existingFamilies.isEmpty()) {
+            sb.append("- Existing families for this user: ");
+            sb.append(String.join(", ", existingFamilies)).append("\n");
+        }
+
+        return sb.toString();
+    }
+
+    private List<String> getExistingFamilyKeys(String axis, UUID userId) {
+        if ("topic".equals(axis)) {
+            return topicLabelRepository.findDistinctFamilyKeysByUserId(userId);
+        }
+        return emotionLabelRepository.findDistinctFamilyKeysByUserId(userId);
+    }
+
+    private static String sanitizeLabel(String label) {
+        if (label == null) return "";
+        return label.trim();
     }
 
     private static String sanitizeFamilyKey(String raw) {
@@ -103,19 +148,31 @@ public class FamilyResolutionService {
         }
         String s = raw.trim().toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9_]+", "_");
         s = s.replaceAll("_+", "_").replaceAll("^_|_$", "");
-        if (s.isEmpty()) {
-            return null;
-        }
-        return truncateKey(s);
+        return s;
     }
 
-    private static String truncateKey(String s) {
-        if (s == null) {
-            return "unknown";
+    private static boolean isValidFamilyKey(String s) {
+        if (s == null || s.isBlank()) {
+            return false;
         }
-        if (s.length() > 100) {
-            return s.substring(0, 100);
+        if (s.length() < 3 || s.length() > 60) {
+            return false;
         }
-        return s;
+        if (!s.matches("[a-z0-9_]+")) {
+            return false;
+        }
+        return true;
+    }
+
+    private static String deriveFallbackFamily(String labelText) {
+        String[] parts = labelText.split("_");
+        if (parts.length >= 2) {
+            return (parts[0] + "_" + parts[1]).toLowerCase();
+        }
+        return labelText.replaceAll("[^a-z0-9]", "_")
+                        .replaceAll("_+", "_")
+                        .replaceAll("^_|_$", "")
+                        .toLowerCase()
+                        .substring(0, Math.min(labelText.length(), 50));
     }
 }

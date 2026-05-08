@@ -9,6 +9,7 @@ import com.cognalytix.source.domain.journal.MoodAnalysis;
 import com.cognalytix.source.domain.journal.MoodAnalysisRepository;
 import com.cognalytix.source.domain.journal.UserEmotionLabel;
 import com.cognalytix.source.domain.journal.UserTopicLabel;
+import com.cognalytix.source.service.SemanticLabelSelector;
 import com.cognalytix.source.service.UserLabelService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -46,6 +47,7 @@ public class JournalAnalysisService {
     private final JournalEntrySectionRepository journalEntrySectionRepository;
     private final UserLabelService userLabelService;
     private final PostEntryMirrorService postEntryMirrorService;
+    private final SemanticLabelSelector semanticLabelSelector;
     private final TransactionTemplate tx;
     private final boolean analysisEnabled;
 
@@ -56,6 +58,7 @@ public class JournalAnalysisService {
             JournalEntrySectionRepository journalEntrySectionRepository,
             UserLabelService userLabelService,
             PostEntryMirrorService postEntryMirrorService,
+            SemanticLabelSelector semanticLabelSelector,
             PlatformTransactionManager platformTransactionManager,
             @Value("${app.analysis.enabled:true}") boolean analysisEnabled) {
         this.chatClient = chatClientBuilder.build();
@@ -64,6 +67,7 @@ public class JournalAnalysisService {
         this.journalEntrySectionRepository = journalEntrySectionRepository;
         this.userLabelService = userLabelService;
         this.postEntryMirrorService = postEntryMirrorService;
+        this.semanticLabelSelector = semanticLabelSelector;
         this.tx = new TransactionTemplate(platformTransactionManager);
         this.tx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         this.analysisEnabled = analysisEnabled;
@@ -155,10 +159,18 @@ public class JournalAnalysisService {
     }
 
     private LlmJournalAnalysisResult callLlm(EntryContext ctx) {
-        List<String> topics =
-                AnalysisPrompts.truncateLabels(userLabelService.listTopicLabelTextsForPrompt(ctx.userId()));
-        List<String> emotions =
-                AnalysisPrompts.truncateLabels(userLabelService.listEmotionLabelTextsForPrompt(ctx.userId()));
+        List<SemanticLabelSelector.LabelCandidate> topicCandidates =
+                semanticLabelSelector.findRelevantTopics(ctx.userId(), ctx.content(), ctx.title());
+        List<SemanticLabelSelector.LabelCandidate> emotionCandidates =
+                semanticLabelSelector.findRelevantEmotions(ctx.userId(), ctx.content(), ctx.title());
+
+        List<String> topics = topicCandidates.stream()
+                .map(SemanticLabelSelector.LabelCandidate::displayText)
+                .toList();
+        List<String> emotions = emotionCandidates.stream()
+                .map(SemanticLabelSelector.LabelCandidate::displayText)
+                .toList();
+
         String system = AnalysisPrompts.buildSystemPrompt(topics, emotions);
         return chatClient
                 .prompt()

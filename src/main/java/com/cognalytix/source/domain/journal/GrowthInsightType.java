@@ -4,5 +4,6 @@ public enum GrowthInsightType {
     POST_ENTRY,
     WEEKLY,
     MONTHLY,
-    MILESTONE
+    MILESTONE,
+    CROSS_TOPIC_GROWTH
 }

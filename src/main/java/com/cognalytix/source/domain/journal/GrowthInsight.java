@@ -62,6 +62,10 @@ public class GrowthInsight {
     @Column(length = 15)
     private GrowthDirection direction;
 
+    @Enumerated(EnumType.STRING)
+    @Column(name = "pattern_type", length = 30)
+    private PatternType patternType;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
@@ -151,5 +155,13 @@ public class GrowthInsight {
 
     public Instant getCreatedAt() {
         return createdAt;
+    }
+
+    public PatternType getPatternType() {
+        return patternType;
+    }
+
+    public void setPatternType(PatternType patternType) {
+        this.patternType = patternType;
     }
 }

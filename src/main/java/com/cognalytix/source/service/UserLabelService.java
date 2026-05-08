@@ -8,6 +8,7 @@ import com.cognalytix.source.domain.journal.UserTopicLabelRepository;
 import com.cognalytix.source.domain.user.User;
 import com.cognalytix.source.domain.user.UserRepository;
 import com.cognalytix.source.dto.VocabularyItemResponse;
+import com.cognalytix.source.service.EmbeddingStorageService;
 import com.cognalytix.source.util.LabelNormalizer;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -16,7 +17,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -27,16 +30,19 @@ public class UserLabelService {
     private final UserEmotionLabelRepository userEmotionLabelRepository;
     private final UserRepository userRepository;
     private final FamilyResolutionService familyResolutionService;
+    private final EmbeddingStorageService embeddingStorageService;
 
     public UserLabelService(
             UserTopicLabelRepository userTopicLabelRepository,
             UserEmotionLabelRepository userEmotionLabelRepository,
             UserRepository userRepository,
-            FamilyResolutionService familyResolutionService) {
+            FamilyResolutionService familyResolutionService,
+            EmbeddingStorageService embeddingStorageService) {
         this.userTopicLabelRepository = userTopicLabelRepository;
         this.userEmotionLabelRepository = userEmotionLabelRepository;
         this.userRepository = userRepository;
         this.familyResolutionService = familyResolutionService;
+        this.embeddingStorageService = embeddingStorageService;
     }
 
     @Transactional(readOnly = true)
@@ -56,21 +62,17 @@ public class UserLabelService {
     @Transactional(readOnly = true)
     public List<String> listTopicLabelTextsForPrompt(UUID userId) {
         return userTopicLabelRepository.findAllByUser_IdOrderByLabelAsc(Objects.requireNonNull(userId)).stream()
-                .map(UserTopicLabel::getLabel)
+                .map(UserTopicLabel::getDisplayLabel)
                 .toList();
     }
 
     @Transactional(readOnly = true)
     public List<String> listEmotionLabelTextsForPrompt(UUID userId) {
         return userEmotionLabelRepository.findAllByUser_IdOrderByLabelAsc(Objects.requireNonNull(userId)).stream()
-                .map(UserEmotionLabel::getLabel)
+                .map(UserEmotionLabel::getDisplayLabel)
                 .toList();
     }
 
-    /**
-     * Maps LLM output to an existing row when {@link LabelNormalizer} key matches or stored label equals
-     * ignoring case; otherwise creates one row (same as {@link #findOrCreateEmotionLabel(UUID, String)}).
-     */
     @Transactional
     public UserEmotionLabel resolveEmotionFromModel(UUID userId, String phrase) {
         Objects.requireNonNull(userId);
@@ -82,7 +84,7 @@ public class UserLabelService {
                             String trimmed = phrase.trim();
                             for (UserEmotionLabel l :
                                     userEmotionLabelRepository.findAllByUser_IdOrderByLabelAsc(userId)) {
-                                if (l.getLabel().equalsIgnoreCase(trimmed)) {
+                                if (l.getDisplayLabel().equalsIgnoreCase(trimmed)) {
                                     return l;
                                 }
                             }
@@ -90,7 +92,6 @@ public class UserLabelService {
                         });
     }
 
-    /** Same resolution strategy as emotions. */
     @Transactional
     public UserTopicLabel resolveTopicFromModel(UUID userId, String phrase) {
         Objects.requireNonNull(userId);
@@ -102,7 +103,7 @@ public class UserLabelService {
                             String trimmed = phrase.trim();
                             for (UserTopicLabel l :
                                     userTopicLabelRepository.findAllByUser_IdOrderByLabelAsc(userId)) {
-                                if (l.getLabel().equalsIgnoreCase(trimmed)) {
+                                if (l.getDisplayLabel().equalsIgnoreCase(trimmed)) {
                                     return l;
                                 }
                             }
@@ -110,14 +111,12 @@ public class UserLabelService {
                         });
     }
 
-    /**
-     * Deduplicate by {@link LabelNormalizer#normalizeKey(String)}; the display label is the
-     * first phrasing we stored for that key, unless you later add a rename flow.
-     */
     @Transactional
     public UserTopicLabel findOrCreateTopicLabel(UUID userId, String rawPhrasing) {
         User user = userRepository.getReferenceById(Objects.requireNonNull(userId));
         String key = validateAndNormalizeKey(rawPhrasing);
+        String trimmed = rawPhrasing.trim();
+
         return userTopicLabelRepository
                 .findByUserIdAndNormalizedKey(user.getId(), key)
                 .orElseGet(
@@ -125,9 +124,13 @@ public class UserLabelService {
                             UserTopicLabel l = new UserTopicLabel();
                             l.setUser(user);
                             l.setNormalizedKey(key);
-                            l.setLabel(rawPhrasing.trim());
+                            l.setLabel(trimmed);
+                            l.setLabelData(buildLabelData(trimmed, null, null, null));
                             UserTopicLabel saved = userTopicLabelRepository.save(l);
+
                             familyResolutionService.assignFamilyForNewTopic(saved);
+                            embeddingStorageService.storeTopicEmbeddingAsync(saved);
+
                             return userTopicLabelRepository.findById(saved.getId()).orElseThrow();
                         });
     }
@@ -136,6 +139,8 @@ public class UserLabelService {
     public UserEmotionLabel findOrCreateEmotionLabel(UUID userId, String rawPhrasing) {
         User user = userRepository.getReferenceById(Objects.requireNonNull(userId));
         String key = validateAndNormalizeKey(rawPhrasing);
+        String trimmed = rawPhrasing.trim();
+
         return userEmotionLabelRepository
                 .findByUserIdAndNormalizedKey(user.getId(), key)
                 .orElseGet(
@@ -143,11 +148,24 @@ public class UserLabelService {
                             UserEmotionLabel l = new UserEmotionLabel();
                             l.setUser(user);
                             l.setNormalizedKey(key);
-                            l.setLabel(rawPhrasing.trim());
+                            l.setLabel(trimmed);
+                            l.setLabelData(buildLabelData(trimmed, null, null, null));
                             UserEmotionLabel saved = userEmotionLabelRepository.save(l);
+
                             familyResolutionService.assignFamilyForNewEmotion(saved);
+                            embeddingStorageService.storeEmotionEmbeddingAsync(saved);
+
                             return userEmotionLabelRepository.findById(saved.getId()).orElseThrow();
                         });
+    }
+
+    private Map<String, Object> buildLabelData(String display, String category, String topic, String detail) {
+        Map<String, Object> data = new HashMap<>();
+        data.put("display", display);
+        data.put("category", category);
+        data.put("topic", topic);
+        data.put("detail", detail);
+        return data;
     }
 
     private static String validateAndNormalizeKey(String rawPhrasing) {
@@ -165,10 +183,10 @@ public class UserLabelService {
     }
 
     private VocabularyItemResponse toTopicDto(UserTopicLabel t) {
-        return new VocabularyItemResponse(t.getId(), t.getLabel(), t.getNormalizedKey(), t.getCreatedAt());
+        return new VocabularyItemResponse(t.getId(), t.getDisplayLabel(), t.getNormalizedKey(), t.getCreatedAt());
     }
 
     private VocabularyItemResponse toEmotionDto(UserEmotionLabel e) {
-        return new VocabularyItemResponse(e.getId(), e.getLabel(), e.getNormalizedKey(), e.getCreatedAt());
+        return new VocabularyItemResponse(e.getId(), e.getDisplayLabel(), e.getNormalizedKey(), e.getCreatedAt());
     }
 }
