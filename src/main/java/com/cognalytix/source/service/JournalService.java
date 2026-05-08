@@ -187,8 +187,8 @@ public class JournalService {
                 .map(s -> new JournalSectionPayload(
                         s.getId(),
                         s.getSortOrder(),
-                        new UserLabelRef(s.getTopicLabel().getId(), s.getTopicLabel().getLabel()),
-                        new UserLabelRef(s.getEmotionLabel().getId(), s.getEmotionLabel().getLabel()),
+                        UserLabelRef.from(s.getTopicLabel().getLabelData(), s.getTopicLabel().getId(), s.getTopicLabel().getLabel()),
+                        UserLabelRef.from(s.getEmotionLabel().getLabelData(), s.getEmotionLabel().getId(), s.getEmotionLabel().getLabel()),
                         s.getContent(),
                         s.getIntensity()))
                 .toList();

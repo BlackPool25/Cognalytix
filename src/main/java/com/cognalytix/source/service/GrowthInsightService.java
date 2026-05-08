@@ -61,11 +61,11 @@ public class GrowthInsightService {
         boolean mirrorReady = st == AnalysisStatus.DONE;
         if (!mirrorReady) {
             return new GrowthMirrorResponse(
-                    entryId, st.name(), false, false, null, null);
+                    entryId, st.name(), false, false, null, null, null);
         }
         MoodAnalysis mood = moodAnalysisRepository.findByEntryId(entryId).orElse(null);
         if (mood == null) {
-            return new GrowthMirrorResponse(entryId, st.name(), true, false, null, null);
+            return new GrowthMirrorResponse(entryId, st.name(), true, false, null, null, null);
         }
         List<JournalEntrySection> sections =
                 journalEntrySectionRepository.findByJournalEntryIdOrderBySortOrderAsc(entryId);
@@ -96,7 +96,8 @@ public class GrowthInsightService {
                 hasTrajectory = true;
             }
         }
-        return new GrowthMirrorResponse(entryId, st.name(), true, hasTrajectory, day, trajectory);
+        return new GrowthMirrorResponse(entryId, st.name(), true, hasTrajectory, day, trajectory,
+                growthOpt.map(GrowthInsight::getPatternType).map(Enum::name).orElse(null));
     }
 
     private static GrowthDayMirrorPayload toDayPayload(MoodAnalysis m, List<JournalEntrySection> sections) {
