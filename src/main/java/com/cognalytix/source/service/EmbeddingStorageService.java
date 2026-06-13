@@ -1,14 +1,13 @@
 package com.cognalytix.source.service;
 
-import com.cognalytix.source.domain.journal.EmotionLabelEmbedding;
 import com.cognalytix.source.domain.journal.EmotionLabelEmbeddingRepository;
-import com.cognalytix.source.domain.journal.TopicLabelEmbedding;
 import com.cognalytix.source.domain.journal.TopicLabelEmbeddingRepository;
 import com.cognalytix.source.domain.journal.UserEmotionLabel;
 import com.cognalytix.source.domain.journal.UserTopicLabel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.ollama.OllamaEmbeddingModel;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -23,14 +22,17 @@ public class EmbeddingStorageService {
     private final OllamaEmbeddingModel embeddingModel;
     private final TopicLabelEmbeddingRepository topicEmbeddingRepository;
     private final EmotionLabelEmbeddingRepository emotionEmbeddingRepository;
+    private final JdbcTemplate jdbc;
 
     public EmbeddingStorageService(
             OllamaEmbeddingModel embeddingModel,
             TopicLabelEmbeddingRepository topicEmbeddingRepository,
-            EmotionLabelEmbeddingRepository emotionEmbeddingRepository) {
+            EmotionLabelEmbeddingRepository emotionEmbeddingRepository,
+            JdbcTemplate jdbc) {
         this.embeddingModel = embeddingModel;
         this.topicEmbeddingRepository = topicEmbeddingRepository;
         this.emotionEmbeddingRepository = emotionEmbeddingRepository;
+        this.jdbc = jdbc;
     }
 
     @Async("analysisExecutor")
@@ -38,7 +40,7 @@ public class EmbeddingStorageService {
         try {
             storeTopicEmbedding(label);
         } catch (Exception e) {
-            log.debug("Failed to store topic embedding for label {}: {}", label.getId(), e.getMessage());
+            log.error("Failed to store topic embedding for label {}: {}", label.getId(), e.getMessage(), e);
         }
     }
 
@@ -47,7 +49,7 @@ public class EmbeddingStorageService {
         try {
             storeEmotionEmbedding(label);
         } catch (Exception e) {
-            log.debug("Failed to store emotion embedding for label {}: {}", label.getId(), e.getMessage());
+            log.error("Failed to store emotion embedding for label {}: {}", label.getId(), e.getMessage(), e);
         }
     }
 
@@ -57,11 +59,12 @@ public class EmbeddingStorageService {
             return;
         }
         float[] embedding = embeddingModel.embed(label.getDisplayLabel());
-        TopicLabelEmbedding entity = new TopicLabelEmbedding();
-        entity.setLabel(label);
-        entity.setUser(label.getUser());
-        entity.setEmbedding(embedding);
-        topicEmbeddingRepository.save(entity);
+        jdbc.update(
+                "INSERT INTO topic_label_embeddings (label_id, user_id, embedding) VALUES (?, ?, ?::vector)",
+                label.getId(),
+                label.getUser().getId(),
+                formatVector(embedding)
+        );
     }
 
     @Transactional
@@ -70,11 +73,12 @@ public class EmbeddingStorageService {
             return;
         }
         float[] embedding = embeddingModel.embed(label.getDisplayLabel());
-        EmotionLabelEmbedding entity = new EmotionLabelEmbedding();
-        entity.setLabel(label);
-        entity.setUser(label.getUser());
-        entity.setEmbedding(embedding);
-        emotionEmbeddingRepository.save(entity);
+        jdbc.update(
+                "INSERT INTO emotion_label_embeddings (label_id, user_id, embedding) VALUES (?, ?, ?::vector)",
+                label.getId(),
+                label.getUser().getId(),
+                formatVector(embedding)
+        );
     }
 
     public void deleteTopicEmbedding(UUID labelId) {
@@ -83,5 +87,20 @@ public class EmbeddingStorageService {
 
     public void deleteEmotionEmbedding(UUID labelId) {
         emotionEmbeddingRepository.deleteByLabelId(labelId);
+    }
+
+    private String formatVector(float[] vector) {
+        if (vector == null) {
+            return null;
+        }
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < vector.length; i++) {
+            sb.append(vector[i]);
+            if (i < vector.length - 1) {
+                sb.append(",");
+            }
+        }
+        sb.append("]");
+        return sb.toString();
     }
 }

@@ -21,6 +21,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class SemanticLabelSelector {
@@ -34,6 +35,17 @@ public class SemanticLabelSelector {
     private final UserTopicLabelRepository topicLabelRepository;
     private final UserEmotionLabelRepository emotionLabelRepository;
     private final EmbeddingStorageService embeddingStorageService;
+
+    /**
+     * In-process cache for embedding vectors. The key is the lowercase-trimmed text.
+     * GoEmotions labels (28 fixed strings) and common topic keyphrases appear across
+     * many entries and users; caching them eliminates redundant Ollama calls that
+     * would otherwise each cost several seconds on CPU.
+     *
+     * This cache is intentionally unbounded and lives for the JVM lifetime — the number
+     * of distinct short labels a deployment will see is bounded in practice (< 10k).
+     */
+    private final Map<String, float[]> embeddingCache = new ConcurrentHashMap<>();
 
     public SemanticLabelSelector(
             OllamaEmbeddingModel embeddingModel,
@@ -184,7 +196,8 @@ public class SemanticLabelSelector {
         if (text.length() > 8000) {
             text = text.substring(0, 8000);
         }
-        return embeddingModel.embed(text);
+        final String cacheKey = text.toLowerCase().trim();
+        return embeddingCache.computeIfAbsent(cacheKey, embeddingModel::embed);
     }
 
     private double cosineSimilarity(float[] a, float[] b) {

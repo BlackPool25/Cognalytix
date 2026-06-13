@@ -1,230 +1,420 @@
 # Cognalytix — Backend
 
-Spring Boot API for **Cognalytix**, a journaling and mood-insights product. This repository holds the backend service described in `src/main/resources/plans/overview.md` (locked blueprint, April 2026).
+**Cognalytix** is a Spring Boot application that turns personal journal entries into structured self-discovery insights. It identifies emotional patterns across your life's topics, detects growth shifts, and narrates what it finds in your own language.
+
+> *"I never noticed that about myself."* — the core moment Cognalytix creates.
 
 ## Stack
 
 | Area | Choice |
 |------|--------|
 | Runtime | Java **25**, Spring Boot **4.0.x** |
-| API | Spring Web MVC, Jakarta Validation |
-| Security | JWT access tokens + opaque refresh tokens in PostgreSQL; passwords: **SHA-256(pepper)** then **BCrypt** (strength **10**) |
-| Data | Spring Data JPA, PostgreSQL **16**, Flyway migrations |
-| AI | Spring AI + Ollama (`qwen3:14b` by default) — **async** journal analysis after create/update/reanalyze; **label `family_key`** (semantic clustering) on new topic/emotion labels; **post-entry mirror** (SQL drift + structured narration) persisted in **`growth_insights`**; see [docs/journal-analysis-schema.md](docs/journal-analysis-schema.md) |
+| AI | Spring AI **2.0.0-M5** + Ollama (`qwen3.5:4b` default chat; `qwen3.5:0.8b` for label tasks; `qwen3-embedding:0.6b` for embeddings) |
+| Sidecar | Local python service running quantized ONNX models for GoEmotions classification and MiniLM embeddings |
+| Security | JWT access tokens + opaque HMAC'd refresh tokens in PostgreSQL; passwords: **SHA-256(pepper) + BCrypt** |
+| Database | Spring Data JPA, PostgreSQL **16** + **pgvector**, Flyway migrations (V1–V12) |
+| Frontend API | REST + JWT; API base `http://localhost:8000/api` by default |
 
 ## Prerequisites
 
-- **Temurin JDK 25** (matches `pom.xml`). If **IntelliJ** shows “cannot find symbol” for types under `com.cognalytix.source.domain.*` while the files exist, set **File → Project Structure → Project** SDK to **25** and **Language level** to **25** (or SDK default), then **Maven** tool window → **Reload** (reimport), and **File → Invalidate Caches → Invalidate and Restart**. The project must be opened at the **folder that contains `pom.xml`**, not a parent or subfolder. Confirm **`./mvnw -q compile`** on the command line uses the same JDK (`java -version` in that terminal should be 25).
+- **Temurin JDK 25** — `pom.xml` targets 25. If IntelliJ shows "cannot find symbol" for domain types, set **File → Project Structure → Project** SDK to **25** and **Language level** to **25**, then Maven tool window → **Reload**, then **File → Invalidate Caches → Invalidate and Restart**. Open the **folder containing `pom.xml`** (i.e. `source/`), not a parent.
+- **PostgreSQL 16** with the **`pgvector`** extension — `CREATE EXTENSION IF NOT EXISTS vector;`
+- **Ollama** running locally on the host with models pulled:
+  ```bash
+  ollama pull qwen3.5:4b            # chat / narration / insights
+  ollama pull qwen3.5:0.8b          # label tasks / fallback
+  ollama pull qwen3-embedding:0.6b  # semantic label selection (1024-dim vectors)
+  ```
+- **Node.js 20+** if running the frontend locally.
 
-## Quick start
+## Quick Start
 
-1. Start Postgres (example using the repo compose file):
+### 1. Start PostgreSQL
+```bash
+# Using the included compose file (postgres on host port 5332, ollama on 11434):
+cd source && docker compose up -d postgres ollama
+```
 
-   ```bash
-   docker compose up -d postgres
-   ```
+### 2. Set secrets (production only)
+```bash
+export JWT_SECRET=<your-256-bit-secret>          # env: JWT_SECRET
+export REFRESH_STORAGE_SECRET=<your-random-secret> # env: REFRESH_STORAGE_SECRET
+export PASSWORD_PEPPER=<32+ hex chars>            # env: PASSWORD_PEPPER
+export ANALYSIS_ENABLED=true                        # env: ANALYSIS_ENABLED
+```
 
-2. Set secrets for anything beyond local dev (see [Configuration](#configuration)).
+### 3. Run
+```bash
+cd source && ./mvnw spring-boot:run
+```
 
-3. Run the application:
-
-   ```bash
-   ./mvnw spring-boot:run
-   ```
-
-   API base URL defaults to `http://localhost:8000` (`server.port`).
+API starts at `http://localhost:8000`. Flyway auto-applies migrations on first startup.
 
 ## Configuration
 
-Main file: `src/main/resources/application.yml`. Important `app` settings:
+All settings live in `src/main/resources/application.yml`. Key `app.*` properties:
 
-| Property | Purpose |
-|----------|---------|
-| `app.jwt.secret` | HMAC key for signing access JWTs. Base64 is recommended; raw strings shorter than 256 bits are hashed to 32 bytes internally. Override with env **`JWT_SECRET`**. |
-| `app.jwt.access-token-expiry-ms` | Access token lifetime (**900000** = **15 minutes**). |
-| `app.jwt.refresh-token-expiry-days` | Refresh token lifetime (**7** days). |
-| `app.jwt.refresh-storage-secret` | Key material to **HMAC opaque refresh tokens before storing** (plain refresh tokens are never persisted). Set env **`REFRESH_STORAGE_SECRET`** in production. |
-| `app.security.password-pepper` | **64-character** secret appended to every password before BCrypt. Override with **`PASSWORD_PEPPER`** in production. |
-| `app.security.admin-allowed-emails` | Optional comma-separated emails. Users must already have **`role = ADMIN`** in the database; if this list is **non-empty**, only these emails may call admin APIs. Env **`ADMIN_ALLOWED_EMAILS`**. If **empty**, any **ADMIN** may use admin routes. |
-| `app.async.*` | Core / max pool size and queue for **`@Async("analysisExecutor")`** (journal LLM). |
-| `app.analysis.enabled` | If **`false`**, async analysis is skipped (no Ollama call) and **family-key LLM** + **post-entry mirror** are skipped. Env **`ANALYSIS_ENABLED`**. |
+| Property | Default | Description |
+|---|---|---|
+| `app.jwt.secret` | local dev default | HMAC key for access JWTs. Override: **`JWT_SECRET`** |
+| `app.jwt.access-token-expiry-ms` | 900000 (15 min) | Access token lifetime |
+| `app.jwt.refresh-token-expiry-days` | 7 | Refresh token lifetime |
+| `app.jwt.refresh-storage-secret` | local default | HMAC key for opaque refresh tokens before storing |
+| `app.security.password-pepper` | 64-char hex | Server pepper appended before BCrypt |
+| `app.security.admin-allowed-emails` | *(empty)* | Optional comma-sep emails; restricts `/api/admin/**` when non-empty |
+| `app.ollama.chat-model` | `qwen3.5:4b` | Primary chat/narration model. Override: **`OLLAMA_CHAT_MODEL`** |
+| `app.ollama.label-model` | `qwen3.5:0.8b` | Label generation model. Override: **`OLLAMA_LABEL_MODEL`** |
+| `app.ollama.embedding-model` | `qwen3-embedding:0.6b` | Embedding model name for semantic label matching. Override: **`OLLAMA_EMBEDDING_MODEL`** |
+| `app.async.core-pool-size` | 4 | Thread pool for async journal analysis |
+| `app.analysis.enabled` | `true` | Disables all Ollama calls (analysis, family clustering, mirror narration) |
 
-Database URL and credentials use `spring.datasource.*` with env overrides **`DB_URL`**, **`DB_USER`**, **`DB_PASS`** (see `docker-compose.yml` for the in-network URL `jdbc:postgresql://postgres:5432/cognalytix`).
+Database URL and credentials use `spring.datasource.*` with env overrides **`DB_URL`**, **`DB_USER`**, **`DB_PASS`** (compose uses `jdbc:postgresql://postgres:5432/cognalytix`).
 
-**Type-safe `app.*` settings:** `JwtProperties` and `AppSecurityProperties` are registered via `@EnableConfigurationProperties` on `SourceApplication`. `AsyncTaskProperties` (`app.async`) is bound in `config/AsyncConfig` for the analysis thread pool. `JwtRefreshConfig` registers `RefreshTokenHasher`. `JacksonObjectMapperConfig` declares an `ObjectMapper` bean (`@ConditionalOnMissingBean`) so filters and JSON entry points serialize **`ApiErrorResponse`** reliably (needed with Boot 4 in tests).
+## Architecture
 
-## Errors
+### Analysis Pipeline
 
-Failed requests return **`ApiErrorResponse`** JSON: `status`, `error`, `message`, optional `fieldViolations`, optional `expectedPostRequest` hints for `/api/auth/*` POSTs. JWT failures, unauthorized access (401), and forbidden access (403) use this same envelope.
-
-## Authentication
-
-### Public routes (no access token)
-
-- `POST /api/auth/register` — create account; response includes **`message`**, **`tokens`**, **`user`** (`UserPublicDto`).
-- `POST /api/auth/login` — same envelope.
-- `POST /api/auth/refresh` — body `{ "refreshToken": "..." }`; **refresh token rotation**: new access + **new** refresh tokens; former refresh hash is revoked.
-- `GET /login`, `GET /error` — reserved for future UI or error pages.
-- `GET /actuator/health` — liveness (unauthenticated).
-
-### Protected routes
-
-- `POST /api/auth/logout` — requires **`Authorization: Bearer <accessToken>`** and body `{ "refreshToken": "..." }`. Server checks the refresh belongs to that user and revokes it. Response contains **`message`** only (`tokens` / `user` omitted).
-- `PUT /api/auth/password` — **`Authorization: Bearer <accessToken>`**; body `{ "currentPassword", "newPassword" }`. Revokes refresh tokens for that user.
-
-Everything else (**including `GET /api/health`** and journaling) requires a valid Bearer access JWT unless listed as public above.
-
-```http
-Authorization: Bearer <accessToken>
+```
+POST/PUT /api/journals  →  JournalEntryAnalysisEvent (AFTER_COMMIT)
+    → JournalAnalysisService.runAnalysisAsync()          [@Async("analysisExecutor")]
+        1. callLlm() — Sends journal title/content to local Python ONNX Sidecar (:8001)
+           which runs Roberta GoEmotions + MiniLM in one batched call to extract raw sentences,
+           emotions, topics, and intensities.
+        2. pgvector Similarity Match — Queries topic/emotion pgvector embeddings. If similarity
+           >= 0.75, reuses the user's existing label to preserve vocabulary continuity.
+           Otherwise, trusts the sidecar label directly and stores it as a new user label.
+           (Costly LLM-based labeling/renaming is completely eliminated).
+        3. generateInsightAndCopingTip() — Calls qwen3.5:4b once to generate a warm, warm narrative
+           summary and optional coping suggestion.
+        4. Persist: mood_analyses, journal_entry_sections, user_topic/emotion_labels
+        5. PostEntryMirrorService.runAfterSuccessfulAnalysis()
+            a. PatternAnalysisService.findPostEntryEmotionDrift() — SQL aggregates only
+            b. MirrorNarrationService.narrate() — LLM reads structured facts, returns 5-field mirror card
+            c. Persist: growth_insights (POST_ENTRY)
 ```
 
-### Successful auth envelope
+**Key principle: SQL detects patterns, AI narrates them.** Raw journal text never reaches the LLM for pattern detection.
 
-`register` / `login` / `refresh` return JSON such as:
+### Label Selection — Semantic over Hard Cap
+
+Users accumulate topic/emotion labels over time. To avoid duplicates and keep the vocabulary consistent, Cognalytix uses **vector embeddings** and **pgvector similarity** (rather than expensive LLM calls) to resolve them:
+
+1. Sidecar extracts raw keyphrase topics (MiniLM) and emotions (GoEmotions).
+2. Query `topic_label_embeddings` / `emotion_label_embeddings` using **cosine similarity**.
+3. If similarity to an existing label is **>= 0.75**, that label is reused (preserving the user's vocabulary).
+4. Otherwise, the sidecar label is saved as a new label, and its embedding is stored asynchronously via `EmbeddingStorageService`.
+
+### Family Clustering
+
+Labels are clustered into `family_key` by `FamilyResolutionService` (LLM call on new label creation, with retry). "Job pressure" and "work stress" both map to e.g. `work_stress`. This enables pattern detection across synonymous labels without hardcoding any taxonomy.
+
+### Post-Entry Mirror Card (5 Fields)
+
+When `PatternAnalysisService` detects an emotion drift or intensity shift across ≥2 prior entries on the same topic family, `MirrorNarrationService` generates a structured card:
+
+| Field | Description |
+|---|---|
+| `headline` | Max 12 words; concrete, no advice |
+| `trajectoryLine` | One sentence tying the past aggregate pattern to today |
+| `dayAnchorLine` | Today's dominant mood + intensity + one theme |
+| `integratedBody` | 2 short sentences; observation + integration |
+| `direction` | GROWTH / REGRESSION / STABLE |
+
+Direction is classified from `EmotionDriftFacts` (emotion family change + intensity delta thresholds) before the LLM call, and the LLM is instructed to match it.
+
+---
+
+## API Reference
+
+### Authentication
+
+All auth routes are **public** (no Bearer token):
+
+| Method | Path | Body |
+|---|---|---|
+| POST | `/api/auth/register` | `{name, email, password}` |
+| POST | `/api/auth/login` | `{email, password}` |
+| POST | `/api/auth/refresh` | `{refreshToken}` |
+| POST | `/api/auth/logout` | `{refreshToken}` (Bearer required) |
+
+Register/login/refresh return:
+```json
+{
+  "message": "...",
+  "tokens": { "accessToken", "refreshToken", "tokenType", "expiresInSeconds" },
+  "user": { "id", "name", "email", "role" }
+}
+```
+
+Protected auth (Bearer required):
+- `PUT /api/auth/password` — `{currentPassword, newPassword}`
+
+### Journal
+
+Requires **`ROLE_USER`** or **`ROLE_ADMIN`** (Bearer token):
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/api/journals` | Create entry, queues async analysis |
+| GET | `/api/journals` | Paginated list (omits sections) |
+| GET | `/api/journals/{id}` | Full entry with mood analysis + sections |
+| PUT | `/api/journals/{id}` | Update entry, clears + re-queues analysis |
+| POST | `/api/journals/{id}/reanalyze` | Force re-run analysis |
+| DELETE | `/api/journals/{id}` | Soft delete |
+| DELETE | `/api/journals/{id}/permanent` | Hard delete |
+
+**List vs detail:** `GET /journals` omits sections to keep payloads small. Open an entry for full sections.
+
+**Poll for analysis completion:** Poll `GET /api/journals/{id}` until `analysisStatus` is `DONE` or `FAILED`, then call `/api/insights/growth/latest`.
+
+### Growth Insights
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/insights/growth/latest?entryId=<uuid>` | Post-entry mirror for one journal |
+
+`GET /api/insights/growth/latest` returns:
 
 ```json
 {
-  "message": "Signed in successfully.",
-  "tokens": {
-    "accessToken": "...",
-    "refreshToken": "...",
-    "tokenType": "Bearer",
-    "expiresInSeconds": 900
+  "entryId": "...",
+  "analysisStatus": "DONE",
+  "mirrorReady": true,
+  "hasTrajectory": true,
+  "patternType": "EMOTION_DRIFT_ON_TOPIC_FAMILY",
+  "day": {
+    "summaryInsight": "...",
+    "overallIntensity": 3,
+    "dominantMoodLabel": "anxious",
+    "themes": ["work", "uncertainty"],
+    "copingTip": "...",
+    "sections": [{ "topicLabel", "topicFamilyKey", "emotionLabel", "emotionFamilyKey", "intensity", "excerpt" }]
   },
-  "user": {
-    "id": "uuid",
-    "name": "Jane",
-    "email": "jane@example.com",
-    "role": "USER"
+  "trajectory": {
+    "kind": "EMOTION_DRIFT_ON_TOPIC_FAMILY",
+    "mirrorCard": {
+      "headline": "...",
+      "trajectoryLine": "...",
+      "dayAnchorLine": "...",
+      "integratedBody": "...",
+      "direction": "GROWTH"
+    },
+    "trajectoryFacts": {
+      "topicFamilyKey": "work_pressure",
+      "topicDisplayLabel": "job deadline",
+      "priorDominantEmotionFamily": "anxiety",
+      "priorDominantAvgIntensity": 3.5,
+      "priorDistinctJournalCount": 4,
+      "currentDominantEmotionFamily": "acceptance",
+      "currentDominantAvgIntensity": 2.1,
+      "currentSectionCount": 2
+    }
   }
 }
 ```
 
-Never returned: password hashes or internal persistence fields (`UserPublicDto` only).
+`trajectoryFacts` exposes the SQL-aggregated numbers behind the mirror narration — the prior emotion family, current emotion family, intensity values, and journal counts. `hasTrajectory` may become `true` slightly after `analysisStatus` becomes `DONE` because the mirror pipeline runs in a separate transaction.
 
-### Password pepper (persistent)
+**Timing guidance for clients:** Poll `GET /api/journals/{id}` until `DONE`, then poll `GET /api/insights/growth/latest` every 2–3s up to 8 times.
 
-The runtime pepper is **`security_settings.password_pepper`** (Flyway **`V6`**, singleton row **`singleton_key = 1`**). On first startup it is seeded from **`app.security.password-pepper`** (see `SecuritySettingsBootstrap`). `PasswordEncoder` reads the **current DB value via `PasswordPepperService`**, falling back to YAML **only if** that row were missing—normal runs always hit the saved row once bootstrapped.
+### Admin
 
-Admins (**`@adminAuth`**) may rotate pepper:
+Requires **`ROLE_ADMIN`** (Bearer + `@adminAuth`):
 
-- **`PUT /api/admin/security/password-pepper`** — body **`{ "adminPassword", "newPepper" }`** (`newPepper` **≥ 32** characters after trim). Uses the **old** pepper to verify **`adminPassword`**, writes the **new** pepper to the DB, **re-keys only this admin user’s bcrypt hash**, calls **`refresh_tokenRepository.deleteAll()`**, and returns a detailed warning: **every other user’s stored hash is still for the old pepper until an admin sets a new password** for them via **`PUT /api/admin/users/{id}/password`**.
+| Method | Path | Description |
+|---|---|---|
+| PUT | `/api/admin/security/password-pepper` | Rotate server pepper (requires admin password) |
+| PUT | `/api/admin/users/{id}/deactivate` | Deactivate user |
+| PUT | `/api/admin/users/{id}/password` | Reset user password |
 
-### Password storage
+Elevate a user to admin via SQL: `UPDATE users SET role = 'ADMIN' WHERE email = '...';`
 
-Passwords are stored with **SHA-256(password + effective server pepper)** (hex), then **BCrypt** (strength **10**) on that digest.
+---
 
-### Refresh token storage (HMAC + rotation)
+## Database Schema
 
-Opaque refresh tokens are **HMAC’d** before persistence (**`refresh-storage-secret`** / **`REFRESH_STORAGE_SECRET`**). Flyway **V3** replaces the plaintext `token` column with **`token_hash`**.
+### Core Tables
 
-### Admin accounts (`users.role`)
+| Table | Key Columns |
+|---|---|
+| `users` | id, name, email, password_hash, role, is_active |
+| `refresh_tokens` | id, user_id, token_hash, expires_at |
+| `security_settings` | singleton pepper storage |
+| `journal_entries` | id, user_id, title, content, word_count, analysis_status, analysis_attempt/fail_count, in_progress, last_error |
+| `mood_analyses` | id, entry_id, mood_label, aggregate_emotion_label_id, intensity, insight, coping_tip, themes[] |
+| `journal_entry_sections` | id, entry_id, sort_order, topic_label_id, emotion_label_id, content, intensity |
+| `user_topic_labels` | id, user_id, label, normalized_key, family_key, **label_data JSONB** |
+| `user_emotion_labels` | id, user_id, label, normalized_key, family_key, **label_data JSONB** |
+| `topic_label_embeddings` | id, label_id, user_id, **embedding vector(1024)** |
+| `emotion_label_embeddings` | id, label_id, user_id, **embedding vector(1024)** |
+| `growth_insights` | id, user_id, insight_type, trigger_entry_id, topic_family, emotion_family, pattern_data JSONB, narration, direction, **pattern_type** |
+| `label_backfill_status` | Tracks LLM backfill progress for label_data JSONB |
 
-There is **no separate admin table**. Set **`role = 'ADMIN'`** in PostgreSQL (`UPDATE users SET role = 'ADMIN' WHERE email = '...';`) for trusted accounts. Optional **`ADMIN_ALLOWED_EMAILS`** restricts **which ADMIN emails** may call **`/api/admin/**`** when the list is non-empty.
+### label_data JSONB Shape
+```json
+{"display": "feeling overwhelmed", "category": "emotion", "topic": "stress", "detail": "overwhelm"}
+```
+Stored with GIN indexes for efficient hierarchy queries. The `display` field is the human-facing label text.
 
-**Creating an admin and password:**
+### Flyway Migrations
 
-1. **Recommended:** Register with `POST /api/auth/register` using the desired email/password, then elevate in SQL:
+| Version | Description |
+|---|---|
+| V1 | users + refresh_tokens |
+| V2 | users role CHECK constraint |
+| V3 | refresh_token_hash (HMAC replaces plaintext) |
+| V4 | journal_entries |
+| V5 | mood_analyses |
+| V6 | security_settings (singleton pepper) |
+| V7 | per_user_labels + topic_sections |
+| V8 | family_keys + growth_insights |
+| V9 | pattern_type on growth_insights |
+| V10 | label_data JSONB on labels (hierarchical storage) |
+| V11 | pgvector embedding tables (topic/emotion) |
+| V12 | label_backfill_status tracking table |
 
-   ```sql
-   UPDATE users SET role = 'ADMIN' WHERE email = 'your@email.com';
-   ```
+---
 
-2. **`INSERT`-only databases are awkward** because `password_hash` must be **`BCrypt( SHA-256_hex(plaintext_password + pepper) )`**. Matching the Java stack by hand for ad-hoc rows is brittle. Prefer registering through the API, or use **`PUT /api/admin/users/{id}/password`** after you already have another admin JWT.
+## Project Layout
 
-Protected admin APIs (Bearer token; **`@adminAuth`**):
+```
+src/main/java/com/cognalytix/source/
+├── SourceApplication.java
+│
+├── analysis/                  # Journal analysis + mirror pipeline
+│   ├── JournalAnalysisEventListener.java     # AFTER_COMMIT event consumer
+│   ├── JournalAnalysisService.java           # LLM segmentation + section creation
+│   ├── AnalysisPrompts.java                  # All LLM prompt templates
+│   ├── LlmJournalAnalysisResult.java         # Structured LLM output record
+│   ├── SemanticLabelSelector.java            # Embedding-based label selection (service layer)
+│   ├── FamilyResolutionService.java          # LLM family clustering for new labels
+│   ├── PatternAnalysisService.java          # SQL-aggregate emotion drift detection
+│   ├── EmotionDriftFacts.java               # Aggregates-only record for narration
+│   ├── PostEntryMirrorService.java          # Orchestrates drift → narration → persist
+│   ├── MirrorNarrationService.java          # LLM generates 5-field mirror card
+│   ├── MirrorNarrationPrompts.java           # Mirror card prompt templates
+│   ├── LlmMirrorCardStructured.java         # Mirror card structured output
+│   └── AnalysisErrorCode.java
+│
+├── config/                   # Framework wiring
+│   ├── SecurityConfig.java, JwtAuthenticationFilter.java, JwtService.java
+│   ├── AsyncConfig.java                             # analysisExecutor thread pool
+│   └── OllamaConfig.java                            # OllamaEmbeddingModel bean
+│
+├── controller/               # REST layer
+│   ├── AuthController.java, UserVocabularyController.java
+│   ├── JournalController.java
+│   ├── GrowthInsightController.java
+│   └── AdminController.java, HealthCheckController.java
+│
+├── service/                  # Business logic
+│   ├── JournalService.java, UserLabelService.java
+│   ├── GrowthInsightService.java              # Builds GrowthMirrorResponse DTO
+│   ├── EmbeddingStorageService.java           # Async embedding persistence
+│   ├── LabelBackfillService.java              # One-time LLM hierarchy backfill
+│   └── AuthService.java, JwtService.java, AdminService.java
+│
+├── dto/                      # API payloads (records)
+│   ├── auth/, journal/, insights/, admin/, error/
+│   └── insights/: GrowthMirrorResponse, GrowthMirrorCardPayload, GrowthDayMirrorPayload
+│
+├── domain/                   # JPA entities + Spring Data repositories
+│   ├── user/: User.java, UserRepository.java
+│   ├── journal/: JournalEntry, MoodAnalysis, JournalEntrySection,
+│   │             UserTopicLabel, UserEmotionLabel,
+│   │             TopicLabelEmbedding, EmotionLabelEmbedding,
+│   │             GrowthInsight, PatternType, GrowthDirection,
+│   │             LabelBackfillStatus, *Repository.java
+│   ├── token/: RefreshToken.java, RefreshTokenRepository.java
+│   └── settings/: SecuritySettings.java, SecuritySettingsRepository.java
+│
+├── security/                 # Auth components
+│   ├── AuthUserPrincipal.java
+│   ├── PasswordPepperService.java
+│   └── RefreshTokenHasher.java
+│
+└── exception/                # @RestControllerAdvice
+    └── GlobalExceptionHandler.java
 
-- **`PUT /api/admin/security/password-pepper`** — rotate server pepper (**see § Password pepper above**).
-- **`PUT /api/admin/users/{id}/deactivate`** — sets `is_active = false`; cannot deactivate self.
-- **`PUT /api/admin/users/{id}/password`** — body **`{ "newPassword" }`**; resets that user’s password and clears their refresh-token rows only.
+src/main/resources/
+├── application.yml           # All configuration (no YAML overrides needed)
+├── db/migration/V*.sql       # Flyway SQL migrations
+└── plans/overview.md        # Product blueprint
+```
 
-### Journal API
+---
 
-JWT + **`ROLE_USER`** or **`ROLE_ADMIN`**:
+## Roadmap
 
-- **`POST /api/journals`** — create entry; queues analysis when enabled.
-- **`GET /api/journals`** — paginated list.
-- **`GET /api/journals/{id}`**, **`PUT /api/journals/{id}`** — read/update (update clears analysis and re-queues).
-- **`POST /api/journals/{id}/reanalyze`** — rerun analysis.
-- **`DELETE /api/journals/{id}`** — soft delete; **`DELETE /api/journals/{id}/permanent`** — hard delete.
+### Implemented
 
-**List vs detail:** **`GET /api/journals`** (paginated) omits **`sections`** on each item to keep payloads small; **`GET /api/journals/{id}`** returns full **`sections`** and is the right call when you need topic/emotion labels for one entry.
+| Feature | Location |
+|---|---|
+| Async journal entry analysis | `JournalAnalysisService`, `JournalAnalysisEventListener` |
+| Per-user topic/emotion vocabulary | `user_topic_labels`, `user_emotion_labels` |
+| Semantic label selection (embeddings) | `SemanticLabelSelector`, `EmbeddingStorageService` |
+| Family clustering on new labels | `FamilyResolutionService` |
+| Hierarchical label storage (JSONB) | V10 migration, `label_data` on labels |
+| Post-entry pattern detection (SQL-first) | `PatternAnalysisService.findPostEntryEmotionDrift()` |
+| Structured mirror narration (5-field card) | `MirrorNarrationService`, `LlmMirrorCardStructured` |
+| Pattern direction classification | `EmotionDriftFacts.classifyDirection()` |
+| Growth insights read model (API) | `GrowthInsightService`, `GrowthInsightController` |
+| Trajectory facts explainability | `trajectoryFacts` in `GrowthMirrorResponse` |
+| One-time label hierarchy backfill | `LabelBackfillService` |
+| Async embedding on new label | `EmbeddingStorageService` |
 
-Tables: **`journal_entries`**, **`mood_analyses`**, **`journal_entry_sections`**, **`user_topic_labels`**, **`user_emotion_labels`** (with **`family_key`** for cross-entry patterns), **`growth_insights`** — see [docs/journal-analysis-schema.md](docs/journal-analysis-schema.md).
+### Planned (not yet implemented)
 
-Deactivate inactive users: login and refresh return **403** when `is_active` is false.
+| Feature | Notes |
+|---|---|
+| Weekly insight job | Cron defined in `application.yml`; no `@Scheduled` bean yet |
+| Monthly insight job | Cron defined; no bean yet |
+| Milestone insight cards | `GrowthInsightType.MILESTONE` defined; no LLM narration yet |
+| Cross-topic correlation (14-day) | No `CrossTopicCorrelationService`; `patternData` in `growth_insights` is extensible |
+| Scheduled insight endpoints | `GET /api/insights/growth/weekly`, `/monthly`, `/milestones` — no controllers |
+| Structured LLM output | All LLM calls use raw text parsing; `BeanOutputParser` not yet used |
+| Admin analytics panel | `/api/admin/**` limited to user management; no platform-wide analytics |
 
-### Growth / mirror API (post-entry)
-
-After analysis completes, the client can load a **structured** mirror payload (not free-form chat): same-day **`day`** snapshot (sections include topic/emotion **family keys**) and, when pattern rules match, a **`trajectory`** block with **`mirrorCard`** (headline, trajectory line, day anchor, integrated body, direction) plus **`trajectoryFacts`** (aggregates only).
-
-| Method | Path | Purpose |
-|--------|------|--------|
-| `GET` | **`/api/insights/growth/latest?entryId=<uuid>`** | Latest **`POST_ENTRY`** insight for that journal; **`mirrorReady`** when `analysisStatus` is **`DONE`**; **`hasTrajectory`** when a `growth_insights` row exists. |
-
-**Typical flow:** poll **`GET /api/journals/{id}`** until **`analysisStatus`** is **`DONE`** or **`FAILED`**, then call **`GET /api/insights/growth/latest?entryId={id}`**.
-
-**Timing (trajectory vs `DONE`):** Per-entry analysis and persistence finish first; **`POST_ENTRY`** `growth_insights` (pattern SQL + optional mirror narration LLM) runs in a **follow-up transaction** on the analysis worker. So the journal can be **`DONE`** while **`hasTrajectory`** is still **`false`** for a short window even when a pattern will be stored. **Retry `growth/latest` a few times** (e.g. every 2–5s) or wait briefly before treating **`hasTrajectory`** as final.
-
-**When `hasTrajectory` is true:** Pattern rules must match (at minimum: **≥ 3** non-deleted journals for the user; **≥ 2** **earlier** entries—by `created_at` before this one—each with at least one section sharing the **same topic `family_key`** as a section in **this** entry; plus **emotion-family change** or **meaningful intensity shift** between prior aggregates and this entry for that family). Reusing the same real-world theme across entries helps the model reuse topic labels from the growing vocabulary.
-
-If rules do not match, **`day`** is still populated (entry insight + sections with family keys) and **`trajectory`** stays **`null`**.
-
-Updating or reanalyzing an entry removes any existing **`POST_ENTRY`** row for that `trigger_entry_id` before new analysis runs.
-
-## Journal AI analysis (Ollama)
-
-**Schema & LLM contract:** [docs/journal-analysis-schema.md](docs/journal-analysis-schema.md) (tables, JSON shape, error codes).
-
-**Config:** `spring.ai.ollama` in `application.yml` — `OLLAMA_BASE_URL` (default `http://localhost:11434`), `OLLAMA_MODEL` (default `qwen3:14b`), `num-predict: 2048` for structured JSON. **Disable** the worker without removing beans: `app.analysis.enabled=false` or env **`ANALYSIS_ENABLED=false`**. Thread pool: `app.async.*` (used by `@Async("analysisExecutor")`).
-
-**Flow:** `POST/PUT /api/journals` and `POST /api/journals/{id}/reanalyze` publish an event **after the DB transaction commits**; the LLM call runs in a background thread, then results are written to `mood_analyses`, `journal_entry_sections`, and per-user `user_topic_labels` / `user_emotion_labels`. **New labels** get a semantic **`family_key`** via a small LLM JSON call (fallback: `normalized_key`). After a successful save, a **separate transaction** may run **pattern detection** (JDBC aggregates only) and optionally a **mirror narration LLM** that sees **structured facts + same-day snapshot**, not raw journal prose; when a drift pattern is found, a **`growth_insights`** row is stored (`insight_type = POST_ENTRY`, `pattern_data` JSON + `narration`). Poll `GET /api/journals/{id}` until `analysisStatus` is `DONE` or `FAILED` (see `analysisState` for `lastErrorCode`), then **`GET /api/insights/growth/latest?entryId=…`** for the mirror DTO — **`hasTrajectory`** may appear **slightly after** `DONE` (see **Growth / mirror API** § timing).
-
-Flyway **`V8`** adds **`family_key`** columns and **`growth_insights`**.
-
-**Prereq:** Ollama running with the model pulled, e.g. `ollama pull qwen3:14b` (or set `OLLAMA_MODEL` to a model you have).
-
-## Docker Compose
-
-`docker-compose.yml` defines **postgres**, **ollama**, and a **backend** service (expects a `Dockerfile` in the repo root when you build the backend image). Postgres is published on host **5332** → container **5432**.
+---
 
 ## Tests
 
-`src/test/resources/application.yml` uses an in-memory **H2** database (PostgreSQL compatibility mode), disables Flyway, mirrors `UserDetailsServiceAutoConfiguration` exclusion, sets **`app.analysis.enabled: false`** (no background Ollama in unit tests), and supplies JWT, pepper, **`app.async`**, and **`refresh-storage-secret`** so **`SourceApplicationTests`** loads without Postgres.
+`src/test/resources/application.yml` uses in-memory **H2** (PostgreSQL compat mode), disables Flyway, sets `ANALYSIS_ENABLED=false`, and supplies all required secrets so the app loads without external services.
 
 ```bash
 ./mvnw test
 ```
 
-## Project layout (high level)
+---
 
-Packages follow a common **layered** Spring Boot layout under `com.cognalytix.source`:
+## Docker Compose
 
+`docker-compose.yml` defines three services:
+
+| Service | Image | Host Port | Notes |
+|---|---|---|---|
+| `postgres` | `postgres:16-alpine` | 5332 → 5432 | pgvector must be installed on the image |
+| `ollama` | `ollama/ollama:latest` | 11434 | Pull models before first run |
+| `backend` | local Dockerfile | 8000 | Builds from repo root; needs Dockerfile present |
+
+> **Note:** The backend service block in `docker-compose.yml` requires a `Dockerfile` at the repo root. Ensure this exists before `docker compose up backend`.
+
+The **pgvector extension** must be available on the PostgreSQL image. For the Alpine-based `postgres:16-alpine` image, install it via:
+```dockerfile
+RUN apk add --no-cache postgresql16-pgvector
 ```
-src/main/java/com/cognalytix/source/
-  SourceApplication.java
-  analysis/            Journal analysis + mirror pipeline: JournalAnalysisService; FamilyResolutionService; PatternAnalysisService; MirrorNarrationService; PostEntryMirrorService; events; prompts; LlmJournalAnalysisResult
-  config/              Security, JWT, async thread pool, @ConfigurationProperties (JWT, security, async)
-  controller/          @RestController layer (auth, health, journals, growth insights, exports, vocabulary, admin)
-  service/             Business logic (auth, journal CRUD, labels, growth mirror read model, export)
-  dto/                 API DTOs (grouped: auth/, journal/, insights/, admin/, error/)
-  domain/              JPA entities and repositories (user, journal, growth insights, token, settings)
-  security/            Auth principal, entry points, peppering, admin check
-  exception/           @RestControllerAdvice
-  util/                Shared helpers (e.g. LabelNormalizer)
-src/main/resources/
-  application.yml
-  db/migration/        Flyway SQL
-  plans/overview.md    Product blueprint
-docs/                  In-repo technical notes (e.g. journal analysis schema)
-```
+Or use a custom Dockerfile that extends the official PostgreSQL image with the pgvector installation.
 
-This keeps **HTTP**, **application services**, **persistence models**, and **framework wiring** in separate folders so the tree stays easy to navigate as the app grows.
+---
 
-## Roadmap (from blueprint)
+## Security Model
 
-**Implemented:** async per-entry journal analysis, **`family_key`** clustering on labels, **post-entry** growth/mirror (`growth_insights` + **`GET /api/insights/growth/latest`**). **Still to do** (per `overview.md`): scheduled weekly/monthly/milestone insight jobs, React dashboard, and other blueprint items.
+- Access JWTs are stateless HMAC-signed tokens; no token data in the DB
+- Refresh tokens are opaque, HMAC'd before storage, and support rotation
+- Passwords: `BCrypt( SHA-256_hex(password + pepper) )` — pepper stored in DB singleton row
+- User deactivation: `is_active = false` blocks login and refresh for that account
+- Admin routes protected by `@PreAuthorize("hasRole('ADMIN')")` + optional email allowlist
 
 ## License
 
-Unspecified in this repository; add a `LICENSE` when you publish the project.
+Private project.

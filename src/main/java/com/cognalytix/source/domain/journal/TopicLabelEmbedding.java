@@ -15,6 +15,8 @@ import jakarta.persistence.Table;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
+import jakarta.persistence.Convert;
+
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -35,7 +37,7 @@ public class TopicLabelEmbedding {
     @JoinColumn(name = "user_id", nullable = false)
     private User user;
 
-    @JdbcTypeCode(SqlTypes.VECTOR)
+    @Convert(converter = VectorConverter.class)
     @Column(nullable = false, columnDefinition = "vector(1024)")
     private float[] embedding;
 

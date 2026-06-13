@@ -5,9 +5,11 @@ package com.cognalytix.source.analysis;
  */
 public enum AnalysisErrorCode {
     LLM_UNREACHABLE("llm_unreachable"),
+    LLM_TIMEOUT("llm_timeout"),
     LLM_INVALID_RESPONSE("llm_invalid_response"),
     VALIDATION_FAILED("validation_failed"),
     PERSIST_FAILED("persist_failed"),
+    STALE_RESET("stale_reset"),
     /** Catch-all; prefer specific codes. */
     INTERNAL("internal_error");
 

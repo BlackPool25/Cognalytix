@@ -22,17 +22,26 @@ import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.client.ResourceAccessException;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Async Ollama (Spring AI {@link ChatClient}) analysis: topic sections + aggregate mood, persisted
- * to {@code journal_entry_sections}, {@code mood_analyses}, and per-user label tables.
+ * Async analysis pipeline: sidecar classification → pgvector label resolution → insight generation.
  *
- * <p>The model receives this user's saved topic/emotion strings so it can reuse them verbatim; persistence
- * uses {@link UserLabelService#resolveEmotionFromModel} / {@link UserLabelService#resolveTopicFromModel}
- * so normalized-key and minor casing drift still map to existing rows.</p>
+ * <p><b>Label resolution strategy (as of sidecar-trust refactor):</b>
+ * GoEmotions produces human-readable, semantically precise labels (e.g. "admiration", "fear").
+ * Sidecar MiniLM produces meaningful keyphrase topics (e.g. "project deadline").
+ * These labels are trusted directly. The pipeline is:
+ * <ol>
+ *   <li>pgvector similarity ≥ 0.75 → reuse user's existing personal label (vocabulary continuity)</li>
+ *   <li>similarity &lt; 0.75 → use the sidecar label directly, store as new user label</li>
+ * </ol>
+ * The old {@code personalizeLabel} LLM call is eliminated. It was calling a 14B model to rename
+ * GoEmotions output, producing 30+ extra LLM calls per entry and 15-minute processing times.
+ *
+ * <p>The section loop is parallelised via {@code parallelStream()} since sections are independent.
  */
 @Service
 public class JournalAnalysisService {
@@ -41,6 +50,12 @@ public class JournalAnalysisService {
     private static final int MAX_SECTIONS = 32;
     private static final int MAX_THEMES = 8;
 
+    /**
+     * Minimum useful keyphrase length. Single-character or empty topics from the sidecar
+     * fall back to "general" rather than being stored as useless labels.
+     */
+    private static final int MIN_TOPIC_LENGTH = 2;
+
     private final ChatClient chatClient;
     private final JournalEntryRepository journalEntryRepository;
     private final MoodAnalysisRepository moodAnalysisRepository;
@@ -48,6 +63,7 @@ public class JournalAnalysisService {
     private final UserLabelService userLabelService;
     private final PostEntryMirrorService postEntryMirrorService;
     private final SemanticLabelSelector semanticLabelSelector;
+    private final SidecarClient sidecarClient;
     private final TransactionTemplate tx;
     private final boolean analysisEnabled;
 
@@ -59,8 +75,10 @@ public class JournalAnalysisService {
             UserLabelService userLabelService,
             PostEntryMirrorService postEntryMirrorService,
             SemanticLabelSelector semanticLabelSelector,
+            SidecarClient sidecarClient,
             PlatformTransactionManager platformTransactionManager,
             @Value("${app.analysis.enabled:true}") boolean analysisEnabled) {
+        // Primary bean (chat-model / qwen2.5:3b) is auto-wired here via @Primary on OllamaConfig.
         this.chatClient = chatClientBuilder.build();
         this.journalEntryRepository = journalEntryRepository;
         this.moodAnalysisRepository = moodAnalysisRepository;
@@ -68,6 +86,7 @@ public class JournalAnalysisService {
         this.userLabelService = userLabelService;
         this.postEntryMirrorService = postEntryMirrorService;
         this.semanticLabelSelector = semanticLabelSelector;
+        this.sidecarClient = sidecarClient;
         this.tx = new TransactionTemplate(platformTransactionManager);
         this.tx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         this.analysisEnabled = analysisEnabled;
@@ -158,26 +177,162 @@ public class JournalAnalysisService {
         return true;
     }
 
+    private static final double SIMILARITY_THRESHOLD = 0.75;
+
     private LlmJournalAnalysisResult callLlm(EntryContext ctx) {
-        List<SemanticLabelSelector.LabelCandidate> topicCandidates =
-                semanticLabelSelector.findRelevantTopics(ctx.userId(), ctx.content(), ctx.title());
-        List<SemanticLabelSelector.LabelCandidate> emotionCandidates =
-                semanticLabelSelector.findRelevantEmotions(ctx.userId(), ctx.content(), ctx.title());
+        SidecarClient.SidecarAnalysisResponse response = sidecarClient.analyze(ctx.title(), ctx.content());
+        if (response == null || response.sections() == null || response.sections().isEmpty()) {
+            throw new IllegalArgumentException("Sidecar returned empty analysis");
+        }
 
-        List<String> topics = topicCandidates.stream()
-                .map(SemanticLabelSelector.LabelCandidate::displayText)
-                .toList();
-        List<String> emotions = emotionCandidates.stream()
-                .map(SemanticLabelSelector.LabelCandidate::displayText)
-                .toList();
+        // Sections are independent of each other — process in parallel.
+        // embeddingCache in SemanticLabelSelector is ConcurrentHashMap; UserLabelService
+        // methods are @Transactional and safe for concurrent access via separate connections.
+        List<LlmJournalAnalysisResult.LlmTopicSection> resolvedSections =
+                response.sections().parallelStream()
+                        .map(rawSec -> {
+                            String resolvedTopic = resolveOrPersonalizeTopic(
+                                    ctx.userId(), rawSec.rawTopic());
+                            String resolvedEmotion = resolveOrPersonalizeEmotion(
+                                    ctx.userId(), rawSec.rawEmotion());
+                            return new LlmJournalAnalysisResult.LlmTopicSection(
+                                    resolvedTopic,
+                                    resolvedEmotion,
+                                    rawSec.content(),
+                                    rawSec.intensity(),
+                                    rawSec.rawTopic(),
+                                    rawSec.rawEmotion()
+                            );
+                        })
+                        .toList();
 
-        String system = AnalysisPrompts.buildSystemPrompt(topics, emotions);
-        return chatClient
-                .prompt()
-                .system(system)
-                .user(AnalysisPrompts.userPayload(ctx.title(), ctx.content()))
-                .call()
-                .entity(LlmJournalAnalysisResult.class);
+        String dominantMood = response.summary().dominantMood();
+        String resolvedDominantMood = resolveOrPersonalizeEmotion(ctx.userId(), dominantMood);
+
+        LlmJournalAnalysisResult.LlmEntrySummary generatedSummary = generateInsightAndCopingTip(
+                ctx.title(),
+                resolvedSections,
+                resolvedDominantMood,
+                response.summary().intensity(),
+                response.summary().themeHints()
+        );
+
+        return new LlmJournalAnalysisResult(resolvedSections, generatedSummary);
+    }
+
+    /**
+     * Resolves a topic keyphrase from the sidecar to a user label.
+     *
+     * <ol>
+     *   <li>pgvector similarity ≥ 0.75 → return existing user label (preserves vocabulary)</li>
+     *   <li>No match → use the keyphrase directly as the display label, store it</li>
+     * </ol>
+     *
+     * The old {@code personalizeLabel} LLM call has been removed. MiniLM keyphrases are already
+     * usable English phrases — renaming them with a 14B model added ~60 seconds per section with
+     * no quality improvement.
+     *
+     * Guard: if the keyphrase is unusably short (e.g. a single stopword leaked through), fall back
+     * to "general" rather than storing a useless label.
+     */
+    private String resolveOrPersonalizeTopic(UUID userId, String rawTopic) {
+        List<SemanticLabelSelector.LabelCandidate> candidates =
+                semanticLabelSelector.findRelevantTopics(userId, rawTopic, "", 1);
+        if (!candidates.isEmpty() && candidates.get(0).relevanceScore() >= SIMILARITY_THRESHOLD) {
+            return candidates.get(0).displayText();
+        }
+        // No existing label matches — use the sidecar keyphrase directly.
+        if (rawTopic == null || rawTopic.trim().length() < MIN_TOPIC_LENGTH) {
+            return "general";
+        }
+        return rawTopic.trim();
+    }
+
+    /**
+     * Resolves a GoEmotions emotion label to a user label.
+     *
+     * <ol>
+     *   <li>pgvector similarity ≥ 0.75 → return existing user label (preserves vocabulary)</li>
+     *   <li>No match → use the GoEmotions label directly as the display label, store it</li>
+     * </ol>
+     *
+     * GoEmotions labels (admiration, fear, sadness, etc.) are human-readable and semantically
+     * precise. They do not need an LLM to rename them. The old {@code personalizeLabel} call
+     * was the primary source of the 15-minute processing time.
+     */
+    private String resolveOrPersonalizeEmotion(UUID userId, String rawEmotion) {
+        List<SemanticLabelSelector.LabelCandidate> candidates =
+                semanticLabelSelector.findRelevantEmotions(userId, rawEmotion, "", 1);
+        if (!candidates.isEmpty() && candidates.get(0).relevanceScore() >= SIMILARITY_THRESHOLD) {
+            return candidates.get(0).displayText();
+        }
+        // No existing label matches — use the GoEmotions label directly.
+        if (rawEmotion == null || rawEmotion.isBlank()) {
+            return "neutral";
+        }
+        return rawEmotion.trim();
+    }
+
+    private LlmJournalAnalysisResult.LlmEntrySummary generateInsightAndCopingTip(
+            String title,
+            List<LlmJournalAnalysisResult.LlmTopicSection> sections,
+            String dominantMood,
+            int overallIntensity,
+            List<String> themeHints) {
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("Title: ").append(title != null ? title : "").append("\n");
+        sb.append("Overall dominant mood: ").append(dominantMood).append("\n");
+        sb.append("Overall emotional intensity: ").append(overallIntensity).append("\n");
+        sb.append("Sections:\n");
+        for (LlmJournalAnalysisResult.LlmTopicSection sec : sections) {
+            sb.append("- Topic: ").append(sec.topic())
+                    .append(", Emotion: ").append(sec.emotion())
+                    .append(", Intensity: ").append(sec.intensity()).append("\n");
+        }
+
+        String system = """
+                You are a warm, non-clinical self-reflection assistant.
+                Based on the structured analysis of a user's journal entry, generate:
+                1. "insight": 2-3 sentences of grounded, warm observation about the patterns or shifts in their entry. Do not give advice or say "you should".
+                2. "copingTip": if the overall intensity is 4 or 5, write one actionable, gentle suggestion to help them cope. Otherwise, return null.
+
+                Return ONLY a JSON object:
+                {"insight": "...", "copingTip": "..." or null}
+                """;
+
+        try {
+            record SimpleInsightResponse(String insight, String copingTip) {}
+            SimpleInsightResponse res = chatClient.prompt()
+                    .system(system)
+                    .user(sb.toString())
+                    .call()
+                    .entity(SimpleInsightResponse.class);
+
+            if (res != null) {
+                return new LlmJournalAnalysisResult.LlmEntrySummary(
+                        dominantMood,
+                        overallIntensity,
+                        res.insight(),
+                        res.copingTip(),
+                        themeHints,
+                        dominantMood
+                );
+            }
+        } catch (Exception e) {
+            log.warn("Failed to generate insight/coping tip: {}", e.getMessage());
+        }
+
+        String fallbackInsight = "You processed thoughts around " + dominantMood + " today.";
+        String fallbackCoping = overallIntensity >= 4 ? "Take a gentle breath and allow yourself some space." : null;
+        return new LlmJournalAnalysisResult.LlmEntrySummary(
+                dominantMood,
+                overallIntensity,
+                fallbackInsight,
+                fallbackCoping,
+                themeHints,
+                dominantMood
+        );
     }
 
     private void saveSuccess(UUID entryId, UUID userId, LlmJournalAnalysisResult r) {
@@ -199,7 +354,7 @@ public class JournalAnalysisService {
                     journalEntrySectionRepository.deleteByJournalEntryId(fresh.getId());
 
                     LlmJournalAnalysisResult.LlmEntrySummary sum = r.summary();
-                    UserEmotionLabel aggregate = userLabelService.resolveEmotionFromModel(uid, sum.dominantMood());
+                    UserEmotionLabel aggregate = userLabelService.resolveEmotionFromModel(uid, sum.dominantMood(), sum.rawDominantMood());
                     int intensity = clampIntensity(sum.intensity());
                     String coping = null;
                     if (intensity >= 4 && sum.copingTip() != null && !sum.copingTip().isBlank()) {
@@ -220,8 +375,8 @@ public class JournalAnalysisService {
 
                     int i = 0;
                     for (LlmJournalAnalysisResult.LlmTopicSection sec : r.sections()) {
-                        UserTopicLabel tLabel = userLabelService.resolveTopicFromModel(uid, sec.topic());
-                        UserEmotionLabel eLabel = userLabelService.resolveEmotionFromModel(uid, sec.emotion());
+                        UserTopicLabel tLabel = userLabelService.resolveTopicFromModel(uid, sec.topic(), sec.rawTopic());
+                        UserEmotionLabel eLabel = userLabelService.resolveEmotionFromModel(uid, sec.emotion(), sec.rawEmotion());
                         JournalEntrySection section = new JournalEntrySection();
                         section.setJournalEntry(fresh);
                         section.setUser(fresh.getUser());

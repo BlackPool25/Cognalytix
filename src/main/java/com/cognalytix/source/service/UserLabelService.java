@@ -75,6 +75,11 @@ public class UserLabelService {
 
     @Transactional
     public UserEmotionLabel resolveEmotionFromModel(UUID userId, String phrase) {
+        return resolveEmotionFromModel(userId, phrase, null);
+    }
+
+    @Transactional
+    public UserEmotionLabel resolveEmotionFromModel(UUID userId, String phrase, String rawEmotion) {
         Objects.requireNonNull(userId);
         String key = validateAndNormalizeKey(phrase);
         return userEmotionLabelRepository
@@ -88,12 +93,17 @@ public class UserLabelService {
                                     return l;
                                 }
                             }
-                            return findOrCreateEmotionLabel(userId, phrase);
+                            return findOrCreateEmotionLabel(userId, phrase, rawEmotion);
                         });
     }
 
     @Transactional
     public UserTopicLabel resolveTopicFromModel(UUID userId, String phrase) {
+        return resolveTopicFromModel(userId, phrase, null);
+    }
+
+    @Transactional
+    public UserTopicLabel resolveTopicFromModel(UUID userId, String phrase, String rawTopic) {
         Objects.requireNonNull(userId);
         String key = validateAndNormalizeKey(phrase);
         return userTopicLabelRepository
@@ -107,12 +117,17 @@ public class UserLabelService {
                                     return l;
                                 }
                             }
-                            return findOrCreateTopicLabel(userId, phrase);
+                            return findOrCreateTopicLabel(userId, phrase, rawTopic);
                         });
     }
 
     @Transactional
     public UserTopicLabel findOrCreateTopicLabel(UUID userId, String rawPhrasing) {
+        return findOrCreateTopicLabel(userId, rawPhrasing, null);
+    }
+
+    @Transactional
+    public UserTopicLabel findOrCreateTopicLabel(UUID userId, String rawPhrasing, String rawTopic) {
         User user = userRepository.getReferenceById(Objects.requireNonNull(userId));
         String key = validateAndNormalizeKey(rawPhrasing);
         String trimmed = rawPhrasing.trim();
@@ -126,9 +141,11 @@ public class UserLabelService {
                             l.setNormalizedKey(key);
                             l.setLabel(trimmed);
                             l.setLabelData(buildLabelData(trimmed, null, null, null));
+                            
+                            String familyKey = familyResolutionService.resolveTopicFamily(rawTopic, key);
+                            l.setFamilyKey(familyKey);
+                            
                             UserTopicLabel saved = userTopicLabelRepository.save(l);
-
-                            familyResolutionService.assignFamilyForNewTopic(saved);
                             embeddingStorageService.storeTopicEmbeddingAsync(saved);
 
                             return userTopicLabelRepository.findById(saved.getId()).orElseThrow();
@@ -137,6 +154,11 @@ public class UserLabelService {
 
     @Transactional
     public UserEmotionLabel findOrCreateEmotionLabel(UUID userId, String rawPhrasing) {
+        return findOrCreateEmotionLabel(userId, rawPhrasing, null);
+    }
+
+    @Transactional
+    public UserEmotionLabel findOrCreateEmotionLabel(UUID userId, String rawPhrasing, String rawEmotion) {
         User user = userRepository.getReferenceById(Objects.requireNonNull(userId));
         String key = validateAndNormalizeKey(rawPhrasing);
         String trimmed = rawPhrasing.trim();
@@ -150,14 +172,17 @@ public class UserLabelService {
                             l.setNormalizedKey(key);
                             l.setLabel(trimmed);
                             l.setLabelData(buildLabelData(trimmed, null, null, null));
-                            UserEmotionLabel saved = userEmotionLabelRepository.save(l);
+                            
+                            String familyKey = familyResolutionService.resolveEmotionFamily(rawEmotion, key);
+                            l.setFamilyKey(familyKey);
 
-                            familyResolutionService.assignFamilyForNewEmotion(saved);
+                            UserEmotionLabel saved = userEmotionLabelRepository.save(l);
                             embeddingStorageService.storeEmotionEmbeddingAsync(saved);
 
                             return userEmotionLabelRepository.findById(saved.getId()).orElseThrow();
                         });
     }
+
 
     private Map<String, Object> buildLabelData(String display, String category, String topic, String detail) {
         Map<String, Object> data = new HashMap<>();

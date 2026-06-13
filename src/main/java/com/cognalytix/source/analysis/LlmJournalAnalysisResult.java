@@ -18,7 +18,14 @@ public record LlmJournalAnalysisResult(
             @JsonProperty("topic") String topic,
             @JsonProperty("emotion") String emotion,
             @JsonProperty("content") String content,
-            @JsonProperty("intensity") int intensity) {}
+            @JsonProperty("intensity") int intensity,
+            @JsonProperty("rawTopic") String rawTopic,
+            @JsonProperty("rawEmotion") String rawEmotion) {
+
+        public LlmTopicSection(String topic, String emotion, String content, int intensity) {
+            this(topic, emotion, content, intensity, null, null);
+        }
+    }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record LlmEntrySummary(
@@ -26,5 +33,12 @@ public record LlmJournalAnalysisResult(
             @JsonProperty("intensity") int intensity,
             @JsonProperty("insight") String insight,
             @JsonProperty("copingTip") String copingTip,
-            @JsonProperty("themeHints") List<String> themeHints) {}
+            @JsonProperty("themeHints") List<String> themeHints,
+            @JsonProperty("rawDominantMood") String rawDominantMood) {
+
+        public LlmEntrySummary(String dominantMood, int intensity, String insight, String copingTip, List<String> themeHints) {
+            this(dominantMood, intensity, insight, copingTip, themeHints, null);
+        }
+    }
 }
+

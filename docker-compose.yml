@@ -1,5 +1,13 @@
 version: "3.8"
 
+# Dev-only compose (source/docker-compose.yml).
+# For the full production stack (backend + sidecar + postgres + frontend),
+# use the root docker-compose.yml instead.
+#
+# Ollama is NOT containerized. It runs on the host machine.
+# The backend reaches it via http://localhost:11434 when run outside Docker,
+# or via http://host.docker.internal:11434 when run inside Docker.
+
 services:
   postgres:
     image: pgvector/pgvector:pg16
@@ -12,29 +20,25 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
 
-  ollama:
-    image: ollama/ollama:latest
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-
   backend:
     build: .
     ports:
       - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       # Inside the Compose network Postgres listens on 5432; 5332 is only for host → container mapping
       DB_URL: jdbc:postgresql://postgres:5432/cognalytix
       DB_USER: shreyasjoshi
       DB_PASS: password
-      OLLAMA_BASE_URL: http://ollama:11434
-      OLLAMA_MODEL: qwen3:14b
+      # Ollama runs on the HOST machine; host.docker.internal resolves via extra_hosts above.
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      OLLAMA_CHAT_MODEL: qwen3.5:4b
+      OLLAMA_LABEL_MODEL: qwen3.5:0.8b
+      OLLAMA_EMBEDDING_MODEL: nomic-embed-text
       JWT_SECRET: c3VycHJpc2VsZWF2aW5nZHV0eWJvYXR0cnlyZXBlYXRsb2d0aGlyZGRlY2lkZXJlY2U=
     depends_on:
       - postgres
-      - ollama
 
 volumes:
   pgdata:
-  ollama_data:

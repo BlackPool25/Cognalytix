@@ -5,6 +5,11 @@ spring:
   application:
     name: cognalytix-backend
 
+  http:
+    client:
+      read-timeout: 5m
+      connect-timeout: 60s
+
   # JWT + DB-backed users only; do not create Boot's default in-memory user / random password.
   autoconfigure:
     exclude:
@@ -32,9 +37,9 @@ spring:
       base-url: ${OLLAMA_BASE_URL:http://localhost:11434}
       chat:
         options:
-          model: ${OLLAMA_MODEL:qwen3:14b}
+          model: ${OLLAMA_CHAT_MODEL:qwen3.5:4b}
           temperature: 0.3
-          num-predict: 2048
+          num-predict: 8192
 
 app:
   jwt:
@@ -47,6 +52,11 @@ app:
     admin-allowed-emails: ${ADMIN_ALLOWED_EMAILS:}
   ollama:
     embedding-model: ${OLLAMA_EMBEDDING_MODEL:nomic-embed-text}
+    # Primary model — narration (mirror card) and insight/coping generation.
+    chat-model: ${OLLAMA_CHAT_MODEL:qwen3.5:4b}
+    # Small model — reserved for future opt-in personalisation features.
+    # Not called in the hot analysis path after sidecar-trust fixes.
+    label-model: ${OLLAMA_LABEL_MODEL:qwen3.5:0.8b}
 
   async:
     core-pool-size: 4
@@ -56,6 +66,14 @@ app:
   # Set to false in tests or when Ollama is unavailable (skips scheduling; beans still load).
   analysis:
     enabled: ${ANALYSIS_ENABLED:true}
+    # Hard wall-clock limit for a single LLM analysis call (seconds). 0 = no limit (not recommended).
+    timeout-seconds: ${ANALYSIS_TIMEOUT_SECONDS:300}
+    # Entries stuck in analysisInProgress=true for longer than this are reset to FAILED on startup.
+    stale-threshold-minutes: ${ANALYSIS_STALE_THRESHOLD_MINUTES:30}
+
+  sidecar:
+    url: ${SIDECAR_URL:http://localhost:8001}
+
 
   scheduler:
     daily-insight-cron: "0 0 20 * * *"
