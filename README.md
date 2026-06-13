@@ -2,40 +2,24 @@
 
 # Cognalytix
 
-### AI-Powered Self-Discovery Journal & Growth-Insight Platform
+### AI-Powered Self-Discovery Journal & Growth-Insight Engine
 
-**Cognalytix** is an introspective journaling platform that turns personal reflections into structured self-discovery cards. By analyzing journal text at both paragraph and entry levels, it maps long-term emotional patterns, detects growth shifts, and narrates what it finds—helping users realize: *"I never noticed that about myself."*
-
----
-
-## The Problem Cognalytix Solves
-
-Traditional journaling tools are static logs; they record thoughts but do not help you find patterns. Modern AI solutions often send entire journals directly to LLMs, which is slow, expensive, and leads to fragmented vocabularies (e.g. creating different labels for "work stress", "office tension", and "job strain"). 
-
-Cognalytix solves this using a **hybrid SQL + dual-AI strategy**:
-1. **Local Classification Sidecar**: Extracts raw, structured keyphrases and emotions per paragraph on CPU using fast, quantized ONNX models in milliseconds.
-2. **Semantic pgvector Deduplication**: Uses cosine similarity to match extracted tags against the user's existing vocabulary, reusing labels when similarity is $\ge 0.75$ to keep tag lists clean and consistent.
-3. **Generative Mirror Narration**: Aggregates history using PostgreSQL queries and uses a local LLM to translate those facts into structured growth reflections ("Mirror Cards").
+**Cognalytix** is the core backend services and AI orchestration engine that turns personal journal entries into structured self-discovery cards. It processes raw journal text, detects emotional patterns across topic families using a local classification sidecar, semantically deduplicates user vocabulary via PostgreSQL `pgvector`, and narrates growth trends using localized LLMs.
 
 ---
 
-## Project Structure
+## Key Features
 
-The codebase is split into modular components:
-
-| Directory | Description |
-|---|---|
-| [**`source/`**](file:///home/lightdesk/Downloads/Projects/Cognalytix/source/) | Spring Boot 4 backend orchestrating REST APIs, async AI analysis, and pgvector storage. |
-| [**`sidecar/`**](file:///home/lightdesk/Downloads/Projects/Cognalytix/sidecar/) | Python FastAPI service running Roberta (GoEmotions) & MiniLM models via ONNX. |
-| [**`frontend/`**](file:///home/lightdesk/Downloads/Projects/Cognalytix/frontend/) | React 19 single-page app styled with custom warm paper palettes and serif display typography. |
-| [**`docker/`**](file:///home/lightdesk/Downloads/Projects/Cognalytix/docker/) | Custom PostgreSQL 16 image with pgvector pre-installed and health checks. |
-| [**`scripts/`**](file:///home/lightdesk/Downloads/Projects/Cognalytix/scripts/) | Automated stack verification and lifecycle integration demo script. |
+- **Dual-AI Architecture**: Leverages local ONNX models for sub-second paragraph classification and Ollama chat models for high-level insight synthesis and narration.
+- **Semantic Vocabulary Matching**: Utilizes `nomic-embed-text` and PostgreSQL `pgvector` to identify and reuse semantically similar user labels ($\ge 0.75$ cosine similarity), preventing tag duplication.
+- **Explainable Trajectories**: Combines SQL-first statistical aggregation with LLM natural language generation to explain emotional shifts.
+- **Tabular Data Export**: Offers a flat, paginated JSON export of journal sections for analytics tools (e.g., Power BI).
 
 ---
 
 ## System Architecture
 
-Cognalytix runs a containerized service mesh accessing a native host-level instance of Ollama to leverage GPU hardware acceleration.
+The service mesh operates as a containerized stack that connects to a native host-level instance of Ollama to leverage GPU hardware acceleration.
 
 ```mermaid
 graph TD
@@ -60,48 +44,35 @@ graph TD
 
 ## Documentation System
 
-Explore the dedicated docs directory for topic-specific guides:
+Explore the following guides for detailed implementation and setup:
 
-- 🚀 [**Getting Started**](file:///home/lightdesk/Downloads/Projects/Cognalytix/docs/getting-started.md): Installation, quick start, local developer setup, and port mappings.
-- ⚙️ [**System Architecture**](file:///home/lightdesk/Downloads/Projects/Cognalytix/docs/architecture.md): The dual-AI engine breakdown, semantic label selectors, and pattern narration.
-- 🔌 [**API Reference**](file:///home/lightdesk/Downloads/Projects/Cognalytix/docs/api.md): REST endpoints, JSON payloads, pagination, and admin functions.
-- 🗄️ [**Database Schema**](file:///home/lightdesk/Downloads/Projects/Cognalytix/docs/database.md): Schema tables, pgvector index settings, JSONB shapes, and migrations.
-- 🔧 [**Troubleshooting**](file:///home/lightdesk/Downloads/Projects/Cognalytix/docs/troubleshooting.md): IDE compile fixes, connection timeouts, and missing model errors.
+- 🚀 [**Getting Started Guide**](docs/getting-started.md): Installation steps, host Ollama prep, local development, and port mappings.
+- ⚙️ [**System Architecture**](docs/architecture.md): The Dual-AI engine division of labor, label matching, and mirror narration.
+- 🔌 [**API Reference**](docs/api.md): Complete REST endpoint documentation, request/response bodies, and authentication controls.
+- 🗄️ [**Database Schema**](docs/database.md): Schema entity details, pgvector index definitions, JSONB shapes, and migrations.
+- 🔧 [**Troubleshooting Guide**](docs/troubleshooting.md): Compile fixes, network connection resolutions, and cold-start warmup settings.
 
 ---
 
 ## Quick Start (Docker)
 
-To run the entire system in containerized mode:
+To run the backend alongside its database and ONNX sidecar:
 
-1. **Pull required models** in your host Ollama instance:
+1. **Pull required models** on host Ollama:
    ```bash
    ollama pull qwen3.5:4b
    ollama pull nomic-embed-text
    ollama pull qwen3.5:0.8b
    ```
-2. **Start the stack** via Docker Compose:
+2. **Start backend and infrastructure**:
+   Ensure you run the Docker compose from the repository root (parent folder):
    ```bash
-   docker compose up -d
+   docker compose up -d postgres sidecar backend
    ```
-3. **Verify the services** are healthy:
+3. **Verify backend health**:
    ```bash
-   docker compose ps
+   curl -sf http://localhost:8000/actuator/health
    ```
-4. **Access the application**:
-   - Frontend SPA: **`http://localhost:5173`**
-   - REST API: **`http://localhost:8000`**
-
----
-
-## Running the Automated Demo
-
-The repository includes a self-contained shell script that verifies the entire API and processing lifecycle. It performs real HTTP calls, runs ONNX segmentation, calls Ollama, matches labels semantically in PostgreSQL, and outputs growth results.
-
-Run the script:
-```bash
-./scripts/demo.sh
-```
 
 ---
 

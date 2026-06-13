@@ -31,7 +31,7 @@ graph TD
 
 ## The Dual-AI Engine Strategy
 
-![Dual-AI Engine Graphic](file:///home/lightdesk/Downloads/Projects/Cognalytix/docs/images/dual_ai_engine.jpg)
+![Dual-AI Engine Graphic](images/dual_ai_engine.jpg)
 *Visual representation of the Dual-AI processing engine: Structured local classification (left) combined with generative narration (right).*
 
 ### 1. The Fast Local ONNX Sidecar (Python FastAPI)
@@ -99,5 +99,5 @@ The **Post-Entry Mirror Card** generation follows a strict "SQL Detects, AI Narr
 
 ## Next Steps
 
-- Consult the [Database Schema Guide](file:///home/lightdesk/Downloads/Projects/Cognalytix/docs/database.md) to inspect vector columns and table definitions.
-- Go to [Getting Started](file:///home/lightdesk/Downloads/Projects/Cognalytix/docs/getting-started.md) to set up and run the system.
+- Consult the [Database Schema Guide](database.md) to inspect vector columns and table definitions.
+- Go to [Getting Started](getting-started.md) to set up and run the system.

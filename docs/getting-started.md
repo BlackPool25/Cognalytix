@@ -52,7 +52,7 @@ Cognalytix uses host-level Ollama for heavy LLM operations (summary generation, 
 The fastest way to run the entire Cognalytix stack (PostgreSQL + Python Sidecar + Spring Boot Backend + React Frontend) is using Docker Compose.
 
 ### Step A: Spin Up the Stack
-From the project root directory, run:
+From the project root directory (the parent of this backend directory), run:
 ```bash
 docker compose up -d
 ```
@@ -140,5 +140,5 @@ docker compose up -d postgres sidecar
 
 ## Next Steps
 
-- Explore the [System Architecture](file:///home/lightdesk/Downloads/Projects/Cognalytix/docs/architecture.md) to understand how the dual-AI pipeline and pgvector deduplication work.
-- Review the [API Reference](file:///home/lightdesk/Downloads/Projects/Cognalytix/docs/api.md) to inspect endpoints and schemas.
+- Explore the [System Architecture](architecture.md) to understand how the dual-AI pipeline and pgvector deduplication work.
+- Review the [API Reference](api.md) to inspect endpoints and schemas.

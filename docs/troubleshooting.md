@@ -18,7 +18,7 @@ If IntelliJ fails to compile the backend or complains about "cannot find symbol"
 
 ### Project Root Directory
 - **Problem**: Opening the root repository folder (`Cognalytix/`) makes IntelliJ treat it as a generic project rather than a Maven project, leading to import errors.
-- **Solution**: Open the **`source/`** directory directly (the folder containing `pom.xml`) as a standalone project in IntelliJ, not the root repository.
+- **Solution**: Open the **`source/`** directory directly (the folder containing `pom.xml`) as a standalone project in IntelliJ, not the parent directory.
 
 ---
 
@@ -30,7 +30,7 @@ The backend REST API records the machine-readable error code `llm_unreachable` i
 - **Problem**: The backend container cannot access host-level Ollama at `localhost:11434`.
 - **Solution**: 
   - Ensure `OLLAMA_BASE_URL` is set to `http://host.docker.internal:11434`.
-  - In `docker-compose.yml`, verify the `backend` service contains:
+  - In your compose file, verify the `backend` service contains:
     ```yaml
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -80,7 +80,7 @@ The backend REST API records the machine-readable error code `llm_unreachable` i
   `Bind for 0.0.0.0:5332 failed: port is already allocated`.
 - **Solution**:
   - Cognalytix maps PostgreSQL to host port `5332` to avoid conflicts with native instances running on standard port `5432`.
-  - If `5332` is occupied, change the host port binding in `docker-compose.yml`:
+  - If `5332` is occupied, change the host port binding in your compose file:
     ```yaml
     ports:
       - "5339:5432" # Map to an open port
